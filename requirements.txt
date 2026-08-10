@@ -1,6 +1,5 @@
 streamlit>=1.40,<2
 sqlalchemy>=2.0,<3
-openai>=1.99
 google-genai>=1.30
 pydantic>=2.8,<3
 reportlab>=4.2,<5

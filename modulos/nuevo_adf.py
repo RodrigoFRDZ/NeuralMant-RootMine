@@ -3,7 +3,7 @@ import json
 import streamlit as st
 
 from database.conocimiento import buscar_casos_similares, formatear_contexto_casos
-from database.repositorio_adf import guardar_adf
+from database.repositorio_adf import guardar_adf, actualizar_adf, guardar_pdf_adf, obtener_adf, registrar_envio_validacion
 from ia.cliente import (
     generar_cadenas_y_planes,
     generar_diagnostico,
@@ -12,11 +12,12 @@ from ia.cliente import (
 )
 from modulos.diagrama_ishikawa import mostrar_ishikawa
 from reportes.pdf_adf import generar_pdf_adf
+from database.usuarios import resolver_supervisor, resolver_jefe
 
 
 AREAS = [
     "Faena", "Procesos", "Congelado", "Elaborados", "ADM / Despacho",
-    "Servicios", "SADEMA", "Otra",
+    "Servicios", "Generación", "SADEMA", "Otra",
 ]
 
 CATEGORIAS = {
@@ -33,11 +34,16 @@ TOTAL_ETAPAS = 9
 
 def inicializar() -> None:
     if "nuevo_adf" not in st.session_state:
+        usuario = st.session_state.get("usuario_actual") or {}
         st.session_state.nuevo_adf = {
             "paso": 1,
+            "centro": str(usuario.get("centro", "")).strip(),
+            "planta": str(usuario.get("planta", "")).strip(),
             "area": "",
+            "numero_equipo": "",
             "equipo": "",
             "aviso_sap": "",
+            "tiempo_perdido_h": 0.0,
             "relato_original": "",
             "casos_similares": [],
             "diagnostico": None,
@@ -51,10 +57,61 @@ def inicializar() -> None:
             "plan_prevencion": [],
             "informe_final": None,
             "imagen_falla": None,
+            "imagen_equipo": None,
+            "imagen_componente": None,
             "pdf_bytes": None,
             "solicitudes_ia": 0,
             "id_guardado": None,
+            "id_edicion": None,
+            "estado_validacion": "Borrador",
         }
+
+
+def cargar_adf_para_correccion(adf_id: int) -> bool:
+    """Carga un ADF rechazado en el asistente para que su creador lo corrija y reenvíe."""
+    adf = obtener_adf(adf_id)
+    usuario = st.session_state.get("usuario_actual") or {}
+    if not adf:
+        return False
+    correo = (usuario.get("correo") or "").lower().strip()
+    if (adf.creado_por_email or "").lower().strip() != correo:
+        return False
+    if adf.estado not in {"Requiere corrección", "Rechazado"}:
+        return False
+
+    st.session_state.nuevo_adf = {
+        "paso": 1,
+        "centro": adf.centro or str(usuario.get("centro", "")).strip(),
+        "planta": adf.planta or str(usuario.get("planta", "")).strip(),
+        "area": adf.area or "",
+        "numero_equipo": adf.numero_equipo or "",
+        "equipo": adf.equipo or "",
+        "aviso_sap": adf.aviso_sap or "",
+        "tiempo_perdido_h": float(getattr(adf, "tiempo_perdido_h", 0) or 0),
+        "relato_original": adf.relato_original or "",
+        "casos_similares": [],
+        "diagnostico": None,
+        "efecto": adf.efecto or "",
+        "principio_funcionamiento": adf.investigacion_web or "",
+        "ishikawa_ia": None,
+        "ishikawa_validado": {},
+        "causas_priorizadas": [],
+        "profundizacion": None,
+        "cadenas_causales": [],
+        "plan_prevencion": [],
+        "informe_final": None,
+        "imagen_falla": None,
+        "imagen_equipo": None,
+        "imagen_componente": None,
+        "pdf_bytes": None,
+        "solicitudes_ia": 0,
+        "id_guardado": adf.id,
+        "id_edicion": adf.id,
+        "estado_validacion": adf.estado,
+        "comentario_rechazo": adf.comentario_validacion or "",
+    }
+    st.session_state.pagina = "📝 RootMine · Nuevo ADF"
+    return True
 
 
 def avanzar(paso: int) -> None:
@@ -93,29 +150,82 @@ def paso_relato() -> None:
     )
     datos = st.session_state.nuevo_adf
     opciones = ["Seleccione un área"] + AREAS
+    if datos.get("id_edicion"):
+        st.warning(
+            f"🛠️ Estás corrigiendo el ADF #{datos['id_edicion']} rechazado. "
+            f"Observación del validador: {datos.get('comentario_rechazo') or 'Sin comentario registrado'}"
+        )
 
     with st.form("form_relato", clear_on_submit=False):
-        area = st.selectbox(
-            "Área", opciones,
-            index=opciones.index(datos["area"]) if datos["area"] else 0,
-        )
-        equipo = st.text_input("Equipo", value=datos["equipo"], placeholder="Ejemplo: Novamax")
-        aviso = st.text_input("Aviso SAP", value=datos["aviso_sap"], placeholder="Opcional")
+        c1, c2 = st.columns(2)
+        with c1:
+            centro_etiqueta = f"{datos.get('centro','')} - {datos.get('planta','')}".strip(" -")
+            st.text_input(
+                "Centro / Planta *",
+                value=centro_etiqueta,
+                disabled=True,
+                help="El centro se obtiene automáticamente desde el maestro de usuarios y no se selecciona manualmente.",
+            )
+            centro = datos.get("centro", "")
+        with c2:
+            area = st.selectbox(
+                "Área *", opciones,
+                index=opciones.index(datos["area"]) if datos["area"] else 0,
+            )
+        c3, c4 = st.columns(2)
+        with c3:
+            numero_equipo = st.text_input(
+                "N° de Equipo *",
+                value=datos["numero_equipo"],
+                placeholder="Ejemplo: 100245 o EQ-100245",
+                help="Código o número único con que el activo se identifica en la planta/SAP.",
+            )
+        with c4:
+            equipo = st.text_input(
+                "Descripción del equipo *",
+                value=datos["equipo"],
+                placeholder="Ejemplo: Evisceradora Novamax",
+            )
+        c5, c6 = st.columns(2)
+        with c5:
+            aviso = st.text_input("Aviso SAP", value=datos["aviso_sap"], placeholder="Opcional")
+        with c6:
+            tiempo_perdido_h = st.number_input(
+                "Tiempo perdido analizado (h)", min_value=0.0, value=float(datos.get("tiempo_perdido_h", 0.0) or 0.0), step=0.1,
+                help="Horas de detención o tiempo perdido atribuible al evento analizado."
+            )
         relato = st.text_area(
             "Relato original", value=datos["relato_original"], height=260,
             placeholder="Describe alarma, condición encontrada, intervención y resultado.",
         )
+        st.markdown("#### Evidencia inicial de la falla")
+        archivo_falla = st.file_uploader(
+            "Imagen de la falla (opcional)",
+            type=["png", "jpg", "jpeg"],
+            key="imagen_falla_inicio",
+            help="Adjunta la evidencia principal del problema. Esta imagen aparecerá junto a la descripción del evento en el informe.",
+        )
+        if archivo_falla is not None:
+            st.image(archivo_falla, caption="Vista previa · Evidencia de la falla", width=420)
+        elif datos.get("imagen_falla"):
+            st.image(datos["imagen_falla"], caption="Imagen de falla cargada", width=420)
         enviar = st.form_submit_button(
             "Analizar contexto con IA →", type="primary", use_container_width=True,
         )
 
     if not enviar:
         return
+    if len(centro.strip()) < 2:
+        st.error("Tu usuario no tiene un Centro configurado en el maestro. Contacta al administrador de RootMine.")
+        return
     if area == "Seleccione un área":
         st.error("Selecciona el área.")
         return
+    if len(numero_equipo.strip()) < 2:
+        st.error("Ingresa el N° de Equipo.")
+        return
     if len(equipo.strip()) < 3:
-        st.error("Ingresa el equipo.")
+        st.error("Ingresa la descripción del equipo.")
         return
     if len(relato.strip()) < 20:
         st.error("Describe el evento con un poco más de detalle.")
@@ -125,16 +235,22 @@ def paso_relato() -> None:
         return
 
     datos.update({
+        "centro": centro.strip(),
+        "planta": datos.get("planta", "").strip(),
         "area": area,
+        "numero_equipo": numero_equipo.strip(),
         "equipo": equipo.strip(),
         "aviso_sap": aviso.strip(),
+        "tiempo_perdido_h": float(tiempo_perdido_h),
         "relato_original": relato.strip(),
     })
+    if archivo_falla is not None:
+        datos["imagen_falla"] = archivo_falla.getvalue()
     try:
         with st.spinner("GearBot está analizando el contexto técnico..."):
-            casos = buscar_casos_similares(equipo=equipo.strip(), relato=relato.strip())
+            casos = buscar_casos_similares(centro=centro.strip(), numero_equipo=numero_equipo.strip(), equipo=equipo.strip(), relato=relato.strip())
             diagnostico = generar_diagnostico(
-                area=area,
+                area=f"{area} | Centro: {centro.strip()} - {datos.get('planta','')} | N° equipo: {numero_equipo.strip()}",
                 equipo=equipo.strip(),
                 aviso_sap=aviso.strip(),
                 relato=relato.strip(),
@@ -175,6 +291,30 @@ def paso_diagnostico() -> None:
         st.subheader("Información faltante")
         for item in diagnostico["informacion_faltante"]:
             st.warning(item)
+
+    st.markdown("### Contexto visual del principio de funcionamiento")
+    st.caption("Puedes adjuntar una imagen general del equipo y otra del componente que presentó la falla. Se utilizarán solo para contextualizar técnicamente el análisis y el PDF.")
+    img1, img2 = st.columns(2)
+    with img1:
+        archivo_equipo = st.file_uploader(
+            "Imagen del equipo (opcional)",
+            type=["png", "jpg", "jpeg"],
+            key="imagen_equipo_contexto",
+        )
+        if archivo_equipo is not None:
+            datos["imagen_equipo"] = archivo_equipo.getvalue()
+        if datos.get("imagen_equipo"):
+            st.image(datos["imagen_equipo"], caption="Equipo / conjunto general", use_container_width=True)
+    with img2:
+        archivo_componente = st.file_uploader(
+            "Imagen del componente afectado (opcional)",
+            type=["png", "jpg", "jpeg"],
+            key="imagen_componente_contexto",
+        )
+        if archivo_componente is not None:
+            datos["imagen_componente"] = archivo_componente.getvalue()
+        if datos.get("imagen_componente"):
+            st.image(datos["imagen_componente"], caption="Componente asociado a la falla", use_container_width=True)
 
     with st.form("form_validar_diagnostico"):
         st.info(f"**Justificación IA:** {diagnostico['justificacion_fenomeno']}")
@@ -232,6 +372,34 @@ def paso_ishikawa() -> None:
     st.info(ishikawa.get("resumen_tecnico", ""))
     for advertencia in ishikawa.get("advertencias", []):
         st.warning(advertencia)
+
+    # Contraste reforzado para las 6M abiertas. Se limita al formulario de esta etapa.
+    st.markdown(
+        """
+        <style>
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] > summary {
+            background: linear-gradient(90deg, #f59e0b, #ffb545) !important;
+            border-radius: 10px !important;
+        }
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] > summary *,
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] > summary p,
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] > summary span {
+            color: #182536 !important;
+            -webkit-text-fill-color: #182536 !important;
+            font-weight: 800 !important;
+        }
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] > summary svg {
+            color: #182536 !important;
+            fill: #182536 !important;
+        }
+        [data-testid="stForm"] [data-testid="stExpander"] details[open] {
+            border-color: #f59e0b !important;
+            box-shadow: 0 0 0 1px rgba(245,158,11,.22) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     with st.form("form_ishikawa"):
         resultado: dict[str, list[dict]] = {}
@@ -472,14 +640,16 @@ def paso_planes() -> None:
                     "responsable_sugerido": responsable.strip(),
                     "plazo_sugerido": plazo.strip(),
                     "evidencia_de_implementacion": evidencia.strip(),
+                    "fecha_compromiso": accion.get("fecha_compromiso", ""),
+                    "estado_ejecucion": accion.get("estado_ejecucion", "Pendiente"),
+                    "fecha_ejecucion": accion.get("fecha_ejecucion", ""),
+                    "noti_sap": accion.get("noti_sap", ""),
+                    "status_usuario_sap": accion.get("status_usuario_sap", ""),
+                    "mov_mercancias": accion.get("mov_mercancias", ""),
+                    "gasto_asociado": accion.get("gasto_asociado", 0.0),
+                    "moneda_gasto": accion.get("moneda_gasto", "CLP"),
                 })
 
-        st.subheader("Imagen de la falla")
-        archivo = st.file_uploader(
-            "Adjunta una fotografía para incorporarla al PDF",
-            type=["png", "jpg", "jpeg"],
-            help="Si no adjuntas una imagen, el informe dejará un espacio reservado.",
-        )
         c1, c2 = st.columns(2)
         volver = c1.form_submit_button("← Volver a 5 Porqués", use_container_width=True)
         generar = c2.form_submit_button(
@@ -494,13 +664,15 @@ def paso_planes() -> None:
             st.error("Debe existir al menos una acción preventiva válida.")
             return
         datos["plan_prevencion"] = validas
-        if archivo is not None:
-            datos["imagen_falla"] = archivo.getvalue()
 
         contexto = json.dumps({
+            "centro": datos["centro"],
+            "planta": datos.get("planta", ""),
             "area": datos["area"],
+            "numero_equipo": datos["numero_equipo"],
             "equipo": datos["equipo"],
             "aviso_sap": datos["aviso_sap"],
+            "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
             "relato_original": datos["relato_original"],
             "hechos_confirmados": datos["diagnostico"]["hechos_confirmados"],
             "efecto": datos["efecto"],
@@ -561,13 +733,18 @@ def paso_informe() -> None:
             "leccion_aprendida": leccion.strip(),
         }
         datos["informe_final"] = informe_editado
-        adf_id = guardar_adf({
+        payload_adf = {
             "creado_por": st.session_state.usuario,
+            "creado_por_email": (st.session_state.get("usuario_actual") or {}).get("correo", ""),
             "estado": "Borrador",
             "etapa": "Informe PDF",
+            "centro": datos["centro"],
+            "planta": datos.get("planta", ""),
             "area": datos["area"],
+            "numero_equipo": datos["numero_equipo"],
             "equipo": datos["equipo"],
             "aviso_sap": datos["aviso_sap"],
+            "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
             "relato_original": datos["relato_original"],
             "analisis_ia": json.dumps(datos["diagnostico"], ensure_ascii=False),
             "efecto": datos["efecto"],
@@ -579,40 +756,80 @@ def paso_informe() -> None:
             "conclusion": conclusion.strip(),
             "plan_prevencion": json.dumps(datos["plan_prevencion"], ensure_ascii=False),
             "leccion_aprendida": leccion.strip(),
-        })
+        }
+        if datos.get("id_edicion"):
+            adf_id = actualizar_adf(int(datos["id_edicion"]), payload_adf)
+        else:
+            adf_id = guardar_adf(payload_adf)
         datos["id_guardado"] = adf_id
         pdf_datos = {
             **informe_editado,
             "creado_por": st.session_state.usuario,
+            "centro": datos["centro"],
+            "planta": datos.get("planta", ""),
             "area": datos["area"],
+            "numero_equipo": datos["numero_equipo"],
             "equipo": datos["equipo"],
             "aviso_sap": datos["aviso_sap"],
+            "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
             "relato_original": datos["relato_original"],
             "efecto": datos["efecto"],
             "ishikawa_validado": datos["ishikawa_validado"],
             "cadenas_causales": datos["cadenas_causales"],
             "plan_prevencion": datos["plan_prevencion"],
         }
-        datos["pdf_bytes"] = generar_pdf_adf(pdf_datos, datos.get("imagen_falla"))
+        datos["pdf_bytes"] = generar_pdf_adf(
+            pdf_datos,
+            imagen_falla=datos.get("imagen_falla"),
+            imagen_equipo=datos.get("imagen_equipo"),
+            imagen_componente=datos.get("imagen_componente"),
+        )
+        guardar_pdf_adf(adf_id, datos["pdf_bytes"])
         avanzar(8)
 
 
 def paso_pdf() -> None:
     encabezado(
-        "Informe PDF preparado",
-        "El documento incluye imagen o espacio reservado, principio de funcionamiento, Ishikawa, 5 Porqués y planes.",
+        "Informe preparado para validación",
+        "El ADF está guardado. Puedes enviarlo al flujo Supervisor → Jefe con notificaciones internas y trazabilidad de cada decisión.",
     )
     datos = st.session_state.nuevo_adf
+    adf = obtener_adf(datos["id_guardado"])
     st.success(f"ADF #{datos['id_guardado']} guardado correctamente.")
     nombre = f"ADF_{datos['equipo'].replace(' ', '_')}_{datos['id_guardado']}.pdf"
     st.download_button(
-        "Descargar informe PDF",
+        "Descargar PDF preliminar",
         data=datos["pdf_bytes"],
         file_name=nombre,
         mime="application/pdf",
-        type="primary",
         use_container_width=True,
     )
+
+    supervisor = resolver_supervisor(datos["centro"], datos["area"])
+    jefe = resolver_jefe(datos["centro"], datos["area"])
+    with st.container(border=True):
+        st.subheader("Flujo de aprobación")
+        st.write(f"**Supervisor:** {supervisor['nombre']} · {supervisor['correo']}" if supervisor else "**Supervisor:** No encontrado para esta área")
+        st.write(f"**Jefe:** {jefe['nombre']} · {jefe['correo']}" if jefe else "**Jefe:** No encontrado para esta área")
+        st.caption("Al enviar, el ADF pasa a Pendiente Supervisor. Si se aprueba, avanza automáticamente a Pendiente Jefe.")
+
+        if not supervisor:
+            st.warning("⚠️ Esta área no tiene Supervisor configurado. El ADF podrá ser tomado por el Ingeniero como reemplazo.")
+        if not jefe:
+            st.warning("⚠️ Esta área no tiene Jefe configurado. El Ingeniero podrá actuar como reemplazo en la etapa final.")
+
+        if adf and adf.estado == "Borrador":
+            if st.button("📨 Enviar a validación", type="primary", use_container_width=True):
+                registrar_envio_validacion(adf.id, supervisor, jefe)
+                datos["estado_validacion"] = "Pendiente Supervisor"
+                if supervisor:
+                    st.success("ADF enviado a validación. El Supervisor recibió una notificación dentro de RootMine.")
+                else:
+                    st.success("ADF enviado a validación. Quedó disponible en la bandeja transversal del Ingeniero.")
+                st.rerun()
+        elif adf:
+            st.info(f"Estado actual: **{adf.estado}** · {adf.etapa}")
+
     if st.button("Ver resumen final →", use_container_width=True):
         avanzar(9)
 
@@ -620,12 +837,19 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v3.0 completado",
+        "RootMine v4.0 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
+    st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
+    st.write(f"**N° de Equipo:** {datos['numero_equipo']}")
     st.write(f"**Equipo:** {datos['equipo']}")
     st.write(f"**Fenómeno:** {datos['efecto']}")
     st.write(f"**Solicitudes IA:** {datos['solicitudes_ia']}")
+    adf = obtener_adf(datos.get('id_guardado')) if datos.get('id_guardado') else None
+    if adf:
+        st.write(f"**Estado de validación:** {adf.estado}")
+        if adf.comentario_validacion:
+            st.warning(f"Último comentario: {adf.comentario_validacion}")
     st.info(
         "Las causas y la causa raíz deben considerarse preliminares hasta que la evidencia de terreno sea revisada y aprobada."
     )
@@ -638,7 +862,7 @@ def mostrar_nuevo_adf() -> None:
     inicializar()
     paso = st.session_state.nuevo_adf["paso"]
     st.markdown(
-        f'<div class="step-chip">RootMine v3.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)

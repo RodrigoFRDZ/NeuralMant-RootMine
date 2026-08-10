@@ -76,7 +76,11 @@ def _estilos():
 
 
 def _tabla_datos(datos: dict, estilos: dict):
+    centro = str(datos.get("centro") or "").strip()
+    planta = str(datos.get("planta") or "").strip()
+    centro_etiqueta = f"{centro} - {planta}".strip(" -") or "No informado"
     filas = [
+        ["Centro", _texto(centro_etiqueta), "N° Equipo", _texto(datos.get("numero_equipo") or "No informado")],
         ["Área", _texto(datos.get("area")), "Equipo", _texto(datos.get("equipo"))],
         ["Aviso SAP", _texto(datos.get("aviso_sap") or "No informado"), "Responsable", _texto(datos.get("creado_por"))],
         ["Fenómeno", Paragraph(_texto(datos.get("efecto")), estilos["normal"]), "Estado", "Preliminar / editable"],
@@ -130,7 +134,27 @@ def _ishikawa_tabla(ishikawa: dict, estilos: dict):
     return tabla
 
 
-def generar_pdf_adf(datos: dict, imagen_bytes: bytes | None = None) -> bytes:
+def _bloque_imagen(imagen_bytes: bytes | None, estilos: dict, texto_vacio: str, ancho: float = 16.5*cm, alto: float = 7.2*cm):
+    if imagen_bytes:
+        try:
+            return Image(BytesIO(imagen_bytes), width=ancho, height=alto, kind="proportional")
+        except Exception:
+            return Paragraph("No fue posible incorporar la imagen adjunta.", estilos["pequeno"])
+    espacio = Table([[Paragraph(texto_vacio, estilos["centro"])]], colWidths=[ancho], rowHeights=[alto])
+    espacio.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#8da0b9")),
+        ("BOX", (0,0), (-1,-1), 1, AZUL),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+    ]))
+    return espacio
+
+
+def generar_pdf_adf(
+    datos: dict,
+    imagen_falla: bytes | None = None,
+    imagen_equipo: bytes | None = None,
+    imagen_componente: bytes | None = None,
+) -> bytes:
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, rightMargin=1.45*cm, leftMargin=1.45*cm,
@@ -149,37 +173,30 @@ def generar_pdf_adf(datos: dict, imagen_bytes: bytes | None = None) -> bytes:
         Spacer(1, 0.35*cm),
         Paragraph("1. Resumen ejecutivo", e["h1"]),
         Paragraph(_texto(datos.get("resumen_ejecutivo")), e["normal"]),
-        Paragraph("2. Descripción del evento", e["h1"]),
+        Paragraph("2. Descripción del evento y evidencia de la falla", e["h1"]),
         Paragraph(_texto(datos.get("descripcion_evento") or datos.get("relato_original")), e["normal"]),
-        Paragraph("3. Evidencia fotográfica de la falla", e["h1"]),
+        Spacer(1, 0.18*cm),
+        _bloque_imagen(imagen_falla, e, "ESPACIO PARA INCORPORAR IMAGEN DE LA FALLA", ancho=16.8*cm, alto=7.0*cm),
+        Spacer(1, 0.25*cm),
     ]
 
-    if imagen_bytes:
-        try:
-            imagen = Image(BytesIO(imagen_bytes), width=15.5*cm, height=8.5*cm, kind="proportional")
-            story.extend([imagen, Spacer(1, 0.2*cm)])
-        except Exception:
-            story.append(Paragraph("No fue posible incorporar la imagen adjunta.", e["pequeno"]))
-    else:
-        espacio = Table([[Paragraph("ESPACIO PARA INCORPORAR IMAGEN DE LA FALLA", e["centro"])]], colWidths=[17.3*cm], rowHeights=[8*cm])
-        espacio.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,-1), colors.HexColor("#8da0b9")),
-            ("BOX", (0,0), (-1,-1), 1, AZUL),
-            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-        ]))
-        story.append(espacio)
-
     story.extend([
-        Paragraph("4. Principio de funcionamiento", e["h1"]),
+        Paragraph("3. Principio de funcionamiento", e["h1"]),
         Paragraph(_texto(datos.get("principio_funcionamiento")), e["normal"]),
-        Paragraph("5. Fenómeno investigado", e["h1"]),
+        Spacer(1, 0.18*cm),
+        Table([[
+            _bloque_imagen(imagen_equipo, e, "IMAGEN DEL EQUIPO", ancho=8.0*cm, alto=5.2*cm),
+            _bloque_imagen(imagen_componente, e, "IMAGEN DEL COMPONENTE AFECTADO", ancho=8.0*cm, alto=5.2*cm),
+        ]], colWidths=[8.25*cm, 8.25*cm]),
+        Spacer(1, 0.25*cm),
+        Paragraph("4. Fenómeno investigado", e["h1"]),
         Paragraph(_texto(datos.get("fenomeno_investigado") or datos.get("efecto")), e["normal"]),
-        Paragraph("6. Análisis Ishikawa 6M", e["h1"]),
+        Paragraph("5. Análisis Ishikawa 6M", e["h1"]),
         Paragraph(_texto(datos.get("sintesis_ishikawa")), e["normal"]),
         Spacer(1, 0.2*cm),
         _ishikawa_tabla(datos.get("ishikawa_validado", {}), e),
         Spacer(1, 0.35*cm),
-        Paragraph("7. Profundización causal - 5 Porqués", e["h1"]),
+        Paragraph("6. Profundización causal - 5 Porqués", e["h1"]),
     ])
 
     for i, cadena in enumerate(datos.get("cadenas_causales", []), start=1):
@@ -211,9 +228,9 @@ def generar_pdf_adf(datos: dict, imagen_bytes: bytes | None = None) -> bytes:
         story.append(KeepTogether(elementos))
 
     story.extend([
-        Paragraph("8. Conclusión técnica", e["h1"]),
+        Paragraph("7. Conclusión técnica", e["h1"]),
         Paragraph(_texto(datos.get("conclusion_tecnica")), e["normal"]),
-        Paragraph("9. Plan de prevención", e["h1"]),
+        Paragraph("8. Plan de prevención", e["h1"]),
     ])
     acciones = datos.get("plan_prevencion", [])
     filas = [["Acción", "Objetivo", "Relación con causa", "Responsable", "Plazo", "Evidencia"]]
@@ -239,7 +256,7 @@ def generar_pdf_adf(datos: dict, imagen_bytes: bytes | None = None) -> bytes:
     ]))
     story.extend([
         tabla_acciones,
-        Paragraph("10. Lección aprendida", e["h1"]),
+        Paragraph("9. Lección aprendida", e["h1"]),
         Paragraph(_texto(datos.get("leccion_aprendida")), e["normal"]),
     ])
 

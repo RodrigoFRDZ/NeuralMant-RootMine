@@ -24,12 +24,13 @@ def mostrar_base_conocimiento() -> None:
 
     consulta = st.text_input(
         "Buscar en los ADF",
-        placeholder="Ejemplo: lubricación, rodamiento, humedad, sensor…",
+        placeholder="Centro, N° de equipo, equipo, causa, fenómeno, acción…",
     ).strip().lower()
 
     coincidencias = []
     for adf in registros:
         texto = " ".join([
+            getattr(adf, "centro", "") or "", getattr(adf, "planta", "") or "", getattr(adf, "numero_equipo", "") or "",
             adf.area or "", adf.equipo or "", adf.relato_original or "",
             adf.efecto or "", adf.conclusion or "", adf.plan_prevencion or "",
         ]).lower()
@@ -43,7 +44,8 @@ def mostrar_base_conocimiento() -> None:
             c1, c2 = st.columns([4, 1])
             with c1:
                 st.markdown(f"### ADF #{adf.id} · {adf.equipo}")
-                st.caption(f"{adf.area} · {adf.fecha_actualizacion:%d/%m/%Y}")
+                centro_txt = ((getattr(adf, "centro", "") or "") + (" - " + getattr(adf, "planta", "") if getattr(adf, "planta", "") else "")) or "Centro no registrado"
+                st.caption(f"{centro_txt} · {adf.area} · N° equipo: {getattr(adf, 'numero_equipo', '') or 'No registrado'} · {adf.fecha_actualizacion:%d/%m/%Y}")
                 if adf.efecto:
                     st.markdown(f"**Fenómeno:** {adf.efecto}")
                 if adf.conclusion:

@@ -1,44 +1,71 @@
-# NeuralMant · RootMine v3.0
+# NeuralMant Suite · RootMine v4.0
 
-Plataforma Streamlit de análisis inteligente de causa raíz, asistida por GearBot.
+RootMine v4.0 es la versión Streamlit preparada para ejecución local en VS Code y para escalar el flujo de ADF por planta, área y rol.
 
-**Created by Rodrigo Fernández**
+## Cambios de esta compilación
 
-# ADF IA v0.9
+- Login corporativo por correo habilitado en el maestro.
+- Diseño de ingreso con GearBot + ROOTMINE y logo NeuralMant nítido.
+- Una sola `GEMINI_API_KEY` central para toda la aplicación.
+- Los **104 usuarios de la carga inicial** están asociados internamente al **Centro 1802 - San Vicente**.
+- El usuario no selecciona centro en el login.
+- Al crear un ADF, el centro/planta se completa automáticamente desde el perfil y queda bloqueado para evitar errores de asignación.
+- Maestro preparado para otros centros como 1901 Lo Miranda, 1702 Rosario y 7186 La Calera cuando se incorporen sus usuarios.
+- Enrutamiento de aprobación por **Centro + Área + Rol/Responsabilidad**, sin una lista fija de `if` por cada jefe.
+- Jefaturas con múltiples áreas soportadas mediante `responsable_de`.
+- Flujo: `Borrador → Pendiente Supervisor → Pendiente Jefe → Aprobado`.
+- Rechazo con comentario obligatorio y trazabilidad.
+- Ingeniero con capacidad de reemplazo transversal dentro de su mismo centro.
+- Subgerente con vista de pendientes de su centro, sin acciones de aprobación.
+- Notificaciones internas; correo externo desactivado durante el piloto.
+- Imágenes de falla al inicio y contexto visual de equipo + componente.
+- Ishikawa 6M y 5 Porqués editables.
+- PDF técnico con evidencia, principio de funcionamiento y plan de prevención.
+- Base de conocimiento capaz de recuperar casos de distintos centros.
 
-Versión con flujo de cuatro llamadas controladas:
+## Estructura del maestro de usuarios
 
-1. Diagnóstico inicial, fenómeno y principio de funcionamiento.
-2. Ishikawa 6M.
-3. 5 Porqués y planes preventivos editables.
-4. Redacción final del informe.
+Cada registro de `data/usuarios_adf.json` puede contener:
 
-El PDF se construye localmente con ReportLab e incluye fotografía de la falla o un espacio reservado, principio de funcionamiento, Ishikawa, cadenas causales y plan preventivo.
+- `correo`
+- `nombre`
+- `centro`
+- `planta`
+- `area`
+- `rol`
+- `responsable_de`
+- `activo`
 
-## Ejecutar
+Para Supervisor/Jefe, `responsable_de` indica las áreas que puede validar. La búsqueda de responsable se realiza dentro del mismo centro del ADF.
+
+## Configuración IA
+
+Copia `.streamlit/secrets.toml.example` como `.streamlit/secrets.toml`:
+
+```toml
+GEMINI_API_KEY = "TU_API_KEY_GEMINI"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+EMAIL_NOTIFICATIONS = false
+```
+
+No subas `secrets.toml` a GitHub.
+
+## Ejecución rápida en VS Code
 
 ```powershell
-py -m venv .venv
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python -m streamlit run app.py
 ```
 
-Configurar `.streamlit/secrets.toml`:
+También puedes usar `INSTALAR_ROOTMINE.bat` y luego `INICIAR_ROOTMINE.bat`.
 
-```toml
-GEMINI_API_KEY = "TU_CLAVE"
-GEMINI_MODEL = "gemini-3.1-flash-lite"
-```
+### Navegación v4.0
+En todas las páginas internas aparece **🏠 ROOTMINE · Inicio** en la parte superior. Este botón vuelve directamente al Dashboard principal. El botón ROOTMINE de la barra lateral mantiene la misma función.
 
-
-## Cambios v1.0
-- Ishikawa presentado como matriz 6M uniforme, con espina compacta opcional.
-- 5 Porqués con profundidad dinámica entre 3 y 5 niveles.
-- Control editable para agregar o quitar niveles causales.
-- Validación mínima para evitar análisis superficiales de solo uno o dos niveles.
-
-
-## Identidad visual
-- GearBot oficial con sus zonas blancas opacas y fondo transparente.
-- Logo NeuralMant: cerebro/red neuronal integrado con engranaje.
+## Actualización seguimiento de planes
+- Indicadores: tiempo perdido por área/equipo, planes atrasados, por vencer y ejecutados, pendientes de validación.
+- Validaciones: descarga de PDF preliminar y visualización de planes antes de aprobar.
+- Planes de acción: fecha compromiso, estado, evidencia, NOTI, status SAP, MOV de mercancías, gasto y revisión IA de respaldos.
+- Historial: muestra respaldos y última revisión IA de cada acción.

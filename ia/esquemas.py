@@ -75,3 +75,25 @@ class InformeFinalIA(BaseModel):
     leccion_aprendida: str
     recomendaciones_cierre: list[str] = Field(default_factory=list)
     pendientes_validacion: list[str] = Field(default_factory=list)
+
+
+class RevisionEvidenciaPlan(BaseModel):
+    veredicto: Literal["Ejecución respaldada", "Evidencia parcial", "Evidencia inconsistente", "No verificable"]
+    confianza: int = Field(ge=0, le=100)
+    resumen: str
+    evidencias_analizadas: list[str] = Field(default_factory=list)
+    orden_trabajo_detectada: str = ""
+    encabezado_orden: str = ""
+    descripcion_orden: str = ""
+    status_usuario_detectado: str = ""
+    fecha_fin_extrema_detectada: str = ""
+    noti_detectada: str = ""
+    mov_mercancias_detectado: str = ""
+    gasto_detectado: str = ""
+    status_indica_ejecucion: bool = False
+    coherencia_plan: Literal["Coherente", "Parcial", "No coherente", "No verificable"] = "No verificable"
+    comparacion_antes_despues: str = ""
+    ejecucion_confirmada: bool = False
+    fecha_ejecucion_estimada: str = ""
+    observaciones: list[str] = Field(default_factory=list)
+    faltantes: list[str] = Field(default_factory=list)

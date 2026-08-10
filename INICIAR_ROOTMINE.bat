@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title NeuralMant - RootMine
+title NeuralMant - RootMine v4.0
 cd /d "%~dp0"
 if not exist .venv\Scripts\python.exe (
   echo El entorno virtual no existe.
