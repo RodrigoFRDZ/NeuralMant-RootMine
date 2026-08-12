@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import streamlit as st
 
@@ -27,6 +28,13 @@ st.set_page_config(
 
 
 
+
+@st.cache_resource(show_spinner=False)
+def preparar_backend() -> bool:
+    crear_tablas()
+    inicializar_maestro_usuarios()
+    return True
+
 def es_admin_rootmine(usuario: dict) -> bool:
     return bool(usuario.get("es_admin", False))
 
@@ -45,6 +53,7 @@ def inicializar_sesion() -> None:
     st.session_state.setdefault("pagina", "🏠 Dashboard")
     st.session_state.setdefault("login_pendiente", None)
     st.session_state.setdefault("token_sesion", "")
+    st.session_state.setdefault("ultimo_toque_sesion", None)
 
 
 def marca_compacta() -> None:
@@ -108,35 +117,38 @@ def _limpiar_token_sesion() -> None:
 
 
 def restaurar_sesion_persistente() -> None:
-    """Restaura login tras F5 y expira después de 30 minutos sin interacción."""
+    """Restaura tras F5 y renueva actividad como máximo cada 5 minutos."""
     token = _token_sesion_actual()
     if not token:
         return
+    ahora = datetime.now()
+    if st.session_state.get("usuario_actual"):
+        ultimo = st.session_state.get("ultimo_toque_sesion")
+        if ultimo and (ahora - ultimo) < timedelta(minutes=5):
+            return
+        correo = validar_y_tocar_sesion(token)
+        if correo:
+            st.session_state.ultimo_toque_sesion = ahora
+            return
+        st.session_state.usuario = ""; st.session_state.usuario_actual = None; st.session_state.login_pendiente = None; _limpiar_token_sesion(); return
     correo = validar_y_tocar_sesion(token)
     if not correo:
-        st.session_state.usuario = ""
-        st.session_state.usuario_actual = None
-        st.session_state.login_pendiente = None
-        _limpiar_token_sesion()
-        return
+        st.session_state.usuario = ""; st.session_state.usuario_actual = None; st.session_state.login_pendiente = None; _limpiar_token_sesion(); return
     usuario = buscar_usuario_por_correo(correo)
     if not usuario:
-        cerrar_sesion(token)
-        st.session_state.usuario = ""
-        st.session_state.usuario_actual = None
-        _limpiar_token_sesion()
-        return
+        cerrar_sesion(token); st.session_state.usuario = ""; st.session_state.usuario_actual = None; _limpiar_token_sesion(); return
     st.session_state.token_sesion = token
     st.session_state.usuario_actual = usuario
     st.session_state.usuario = usuario["nombre"]
     st.session_state.login_pendiente = None
-
+    st.session_state.ultimo_toque_sesion = ahora
 
 def _completar_login(usuario: dict) -> None:
     token = crear_sesion(usuario.get("correo", ""))
     st.session_state.usuario_actual = usuario
     st.session_state.usuario = usuario["nombre"]
     st.session_state.login_pendiente = None
+    st.session_state.ultimo_toque_sesion = datetime.now()
     _guardar_token_sesion(token)
     st.rerun()
 
@@ -231,8 +243,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.1.5 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.1.5 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.1.9 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.1.9 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
 
 def mostrar_menu() -> str:
     usuario = st.session_state.usuario_actual or {}
@@ -277,14 +289,13 @@ def mostrar_menu() -> str:
             _limpiar_token_sesion()
             st.rerun()
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.1.5 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.1.9 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
 def main() -> None:
     cargar_estilos()
-    crear_tablas()
-    inicializar_maestro_usuarios()
+    preparar_backend()
     inicializar_sesion()
     restaurar_sesion_persistente()
     if not st.session_state.usuario_actual:

@@ -3,8 +3,9 @@ from collections import Counter
 
 import streamlit as st
 
-from database.repositorio_adf import listar_adf, listar_pendientes_para, listar_requiere_correccion_para, listar_borradores_para
-from database.metricas_sistema import resumen_uso_ia, uso_base_datos, mb
+from database.rendimiento import borradores_livianos, correcciones_livianas, contar_pendientes, recientes_livianos
+from database.metricas_sistema import mb
+from modulos.cache_lecturas import dashboard_cache, uso_ia_cache, almacenamiento_cache
 from ia.cliente import limites_configurados, obtener_configuracion
 from modulos.nuevo_adf import cargar_adf_para_correccion, cargar_borrador_para_continuar
 
@@ -33,21 +34,15 @@ def _causa_resumen(registro) -> str:
 
 def mostrar_inicio() -> None:
     primer_nombre = st.session_state.usuario.split()[0]
-    registros = listar_adf()
-    # Los indicadores ejecutivos de resultados solo consideran ADF con aprobación final.
-    aprobados = [r for r in registros if (r.estado or "").strip().lower() == "aprobado"]
-    total = len(aprobados)
-    equipos = len({
-        (r.equipo or "").strip()
-        for r in aprobados
-        if (r.equipo or "").strip()
-    })
-    areas = len({r.area for r in aprobados if r.area})
-    con_ia = sum(bool(r.analisis_ia) for r in registros)
-    acciones = sum(len(_json(r.plan_prevencion, [])) for r in registros)
+    resumen = dashboard_cache()
+    total = resumen["aprobados"]
+    equipos = resumen["equipos"]
+    areas = resumen["areas"]
+    con_ia = resumen["con_ia"]
+    acciones = resumen["acciones"]
     usuario_actual = st.session_state.get("usuario_actual") or {}
     rol_actual = usuario_actual.get("rol", "").lower()
-    pendientes_usuario = listar_pendientes_para(usuario_actual.get("correo", ""), rol_actual, usuario_actual.get("centro", "")) if rol_actual in {"supervisor", "jefe", "ingeniero", "subgerente"} else []
+    pendientes_usuario = contar_pendientes(usuario_actual.get("correo", ""), rol_actual, usuario_actual.get("centro", "")) if rol_actual in {"supervisor", "jefe", "ingeniero", "subgerente"} else 0
 
     st.markdown(
         f'''<div class="suite-hero">
@@ -75,28 +70,28 @@ def mostrar_inicio() -> None:
     m2.metric("Equipos analizados", equipos, help="Equipos con al menos un ADF aprobado.")
     m3.metric("Áreas cubiertas", areas, help="Áreas con al menos un ADF aprobado.")
     if rol_actual in {"supervisor", "jefe"}:
-        m4.metric("Mis aprobaciones", len(pendientes_usuario))
+        m4.metric("Mis aprobaciones", pendientes_usuario)
     elif rol_actual == "ingeniero":
-        m4.metric("Pendientes planta", len(pendientes_usuario))
+        m4.metric("Pendientes planta", pendientes_usuario)
     elif rol_actual == "subgerente":
-        m4.metric("Pendientes globales", len(pendientes_usuario))
+        m4.metric("Pendientes globales", pendientes_usuario)
     else:
         m4.metric("Análisis con IA", con_ia)
     m5.metric("Acciones registradas", acciones)
 
     if rol_actual == "ingeniero" and pendientes_usuario:
-        st.info(f"⚙️ Hay {len(pendientes_usuario)} ADF pendientes en la planta. Puedes revisarlos desde Validaciones y actuar como reemplazo solo cuando corresponda.")
+        st.info(f"⚙️ Hay {pendientes_usuario} ADF pendientes en la planta. Puedes revisarlos desde Validaciones y actuar como reemplazo solo cuando corresponda.")
     elif rol_actual == "subgerente" and pendientes_usuario:
-        st.info(f"👁️ Seguimiento global: actualmente hay {len(pendientes_usuario)} ADF pendientes de validación.")
+        st.info(f"👁️ Seguimiento global: actualmente hay {pendientes_usuario} ADF pendientes de validación.")
     elif rol_actual in {"supervisor", "jefe"} and pendientes_usuario:
-        st.warning(f"✅ Tienes {len(pendientes_usuario)} ADF pendientes de tu validación.")
+        st.warning(f"✅ Tienes {pendientes_usuario} ADF pendientes de tu validación.")
 
     if pendientes_usuario and rol_actual in {"supervisor", "jefe", "ingeniero"}:
         if st.button("✅ Ir a revisar y liberar ADF pendientes", type="primary", use_container_width=True, key="dash_validaciones"):
             st.session_state.pagina = "✅ Validaciones"
             st.rerun()
 
-    borradores = listar_borradores_para(usuario_actual.get("correo", ""))
+    borradores = borradores_livianos(usuario_actual.get("correo", ""), limite=8)
     if borradores:
         st.markdown("### 📝 ADF en progreso")
         st.info(f"Tienes {len(borradores)} análisis sin finalizar. El avance está guardado en la base de datos.")
@@ -116,7 +111,7 @@ def mostrar_inicio() -> None:
                             st.error("No fue posible abrir este borrador.")
 
     # Bandeja del creador: llegan rechazos del Supervisor o devoluciones derivadas por el Supervisor tras una observación de Jefatura.
-    correcciones = listar_requiere_correccion_para(usuario_actual.get("correo", ""))
+    correcciones = correcciones_livianas(usuario_actual.get("correo", ""), limite=12)
     if correcciones:
         st.markdown("### 🛠️ ADF devueltos para corrección")
         st.warning(f"Tienes {len(correcciones)} ADF rechazado(s) que requieren ajustes antes de reenviarlos a validación.")
@@ -165,10 +160,15 @@ def mostrar_inicio() -> None:
 
     # Acceso exclusivo del administrador RootMine.
     if _es_admin_rootmine(usuario_actual):
-        st.markdown("#### 📡 Capacidad RootMine")
-        uso_ia = resumen_uso_ia()
+        cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
+        with cap_titulo:
+            st.markdown("#### 📡 Capacidad RootMine")
+        with cap_actualizar:
+            if st.button("↻ Actualizar", key="refresh_capacidad", use_container_width=True):
+                dashboard_cache.clear(); uso_ia_cache.clear(); almacenamiento_cache.clear(); st.rerun()
+        uso_ia = uso_ia_cache()
         limites = limites_configurados()
-        almacenamiento = uso_base_datos()
+        almacenamiento = almacenamiento_cache()
         modelo_ia = obtener_configuracion().modelo
 
         cap1, cap2, cap3 = st.columns(3)
@@ -238,15 +238,16 @@ def mostrar_inicio() -> None:
 
     left, right = st.columns([1.35, 1], gap="large")
     with left:
+        recientes = recientes_livianos(limite=5)
         st.markdown("### Análisis recientes")
-        if not registros:
+        if not recientes:
             st.info("Aún no existen análisis registrados.")
         else:
-            for adf in registros[:5]:
+            for adf in recientes:
                 estado = adf.estado or "Borrador"
                 st.markdown(
                     f'''<div class="recent-row"><div class="recent-icon">📄</div>
-                    <div class="recent-copy"><b>ADF #{adf.id} · {adf.equipo}</b><span>{((getattr(adf, "centro", "") or "") + (" - " + getattr(adf, "planta", "") if getattr(adf, "planta", "") else "")) or "Centro no registrado"} · {adf.area} · N° {getattr(adf, "numero_equipo", "") or "s/i"} · {_causa_resumen(adf)}</span></div>
+                    <div class="recent-copy"><b>ADF #{adf.id} · {adf.equipo}</b><span>{((adf.centro or "") + (" - " + adf.planta if adf.planta else "")) or "Centro no registrado"} · {adf.area} · N° {adf.numero_equipo or "s/i"} · {_causa_resumen(adf)}</span></div>
                     <div class="recent-meta"><span>{adf.fecha_actualizacion:%d/%m/%Y}</span><em>{estado}</em></div></div>''',
                     unsafe_allow_html=True,
                 )

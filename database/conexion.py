@@ -6,7 +6,6 @@ from pathlib import Path
 import tomllib
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
 
 DB_PATH = Path("data/adf_ia.db")
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -52,12 +51,14 @@ def descripcion_backend() -> str:
 def _crear_engine() -> Engine:
     url = _database_url()
     if url:
-        # Supabase ya administra el pooling mediante Session Pooler.
-        # NullPool evita mantener conexiones locales obsoletas entre reruns de Streamlit.
+        # Reutiliza un pequeño pool local para evitar renegociar TCP/SSL en cada consulta.
         return create_engine(
             url,
-            poolclass=NullPool,
             pool_pre_ping=True,
+            pool_recycle=300,
+            pool_size=3,
+            max_overflow=2,
+            pool_timeout=10,
             connect_args={
                 "connect_timeout": 10,
                 "sslmode": "require",
