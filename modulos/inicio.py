@@ -34,9 +34,15 @@ def _causa_resumen(registro) -> str:
 def mostrar_inicio() -> None:
     primer_nombre = st.session_state.usuario.split()[0]
     registros = listar_adf()
-    total = len(registros)
-    equipos = len({getattr(r, "numero_equipo", "") or r.equipo for r in registros if getattr(r, "numero_equipo", "") or r.equipo})
-    areas = len({r.area for r in registros if r.area})
+    # Los indicadores ejecutivos de resultados solo consideran ADF con aprobación final.
+    aprobados = [r for r in registros if (r.estado or "").strip().lower() == "aprobado"]
+    total = len(aprobados)
+    equipos = len({
+        (r.equipo or "").strip()
+        for r in aprobados
+        if (r.equipo or "").strip()
+    })
+    areas = len({r.area for r in aprobados if r.area})
     con_ia = sum(bool(r.analisis_ia) for r in registros)
     acciones = sum(len(_json(r.plan_prevencion, [])) for r in registros)
     usuario_actual = st.session_state.get("usuario_actual") or {}
@@ -65,9 +71,9 @@ def mostrar_inicio() -> None:
 
     st.markdown("### Panel general")
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("ADF realizados", total)
-    m2.metric("Equipos analizados", equipos)
-    m3.metric("Áreas cubiertas", areas)
+    m1.metric("ADF aprobados", total, help="Solo ADF que completaron Supervisor → Jefatura.")
+    m2.metric("Equipos analizados", equipos, help="Equipos con al menos un ADF aprobado.")
+    m3.metric("Áreas cubiertas", areas, help="Áreas con al menos un ADF aprobado.")
     if rol_actual in {"supervisor", "jefe"}:
         m4.metric("Mis aprobaciones", len(pendientes_usuario))
     elif rol_actual == "ingeniero":

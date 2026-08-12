@@ -1,8 +1,9 @@
 import base64
 import json
+from datetime import datetime
 import streamlit as st
 
-from database.repositorio_adf import listar_adf
+from database.repositorio_adf import listar_adf, historial_validaciones
 from modulos.nuevo_adf import cargar_adf_para_correccion, cargar_borrador_para_continuar
 from reportes.pdf_adf import generar_pdf_adf
 
@@ -42,6 +43,134 @@ def _pdf_desde_registro(adf) -> bytes:
         "plan_prevencion": plan,
     }
     return generar_pdf_adf(datos)
+
+
+
+def _duracion_legible(inicio, fin) -> str:
+    if not inicio or not fin:
+        return "—"
+    try:
+        segundos = max(0, int((fin - inicio).total_seconds()))
+    except Exception:
+        return "—"
+    dias, resto = divmod(segundos, 86400)
+    horas, resto = divmod(resto, 3600)
+    minutos, _ = divmod(resto, 60)
+    partes = []
+    if dias:
+        partes.append(f"{dias} d")
+    if horas or dias:
+        partes.append(f"{horas} h")
+    partes.append(f"{minutos} min")
+    return " ".join(partes)
+
+
+def _fecha_hora(fecha) -> str:
+    if not fecha:
+        return "Sin fecha registrada"
+    try:
+        return fecha.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(fecha)
+
+
+def _icono_evento(etapa: str, accion: str) -> str:
+    texto = f"{etapa} {accion}".lower()
+    if "rechaz" in texto or "devuelto" in texto:
+        return "↩️"
+    if "aprobad" in texto or "aprobar" in texto:
+        return "✅"
+    if "reenviado" in texto:
+        return "🔁"
+    if "enviado" in texto or "envío" in texto:
+        return "📤"
+    return "•"
+
+
+def _mostrar_linea_tiempo(adf) -> None:
+    """Muestra la trazabilidad completa del flujo de un ADF."""
+    ahora = datetime.now()
+    fin = adf.fecha_aprobacion_jefe if (adf.estado or "") == "Aprobado" and adf.fecha_aprobacion_jefe else ahora
+    titulo_tiempo = "Tiempo total hasta aprobación" if (adf.estado or "") == "Aprobado" else "Tiempo transcurrido desde creación"
+
+    st.markdown("#### 🕒 Flujo y trazabilidad")
+    t1, t2, t3 = st.columns(3)
+    t1.metric("Creación", _fecha_hora(adf.fecha_creacion))
+    t2.metric("Estado actual", adf.estado or "Borrador")
+    t3.metric(titulo_tiempo, _duracion_legible(adf.fecha_creacion, fin))
+
+    eventos = [{
+        "fecha": adf.fecha_creacion,
+        "etapa": "Creación",
+        "accion": "ADF creado",
+        "usuario": adf.creado_por or "Usuario no registrado",
+        "comentario": "Inicio del análisis en RootMine.",
+    }]
+
+    try:
+        validaciones = historial_validaciones(adf.id)
+    except Exception:
+        validaciones = []
+
+    for item in validaciones:
+        eventos.append({
+            "fecha": item.fecha,
+            "etapa": item.etapa or "Flujo",
+            "accion": item.accion or "Evento",
+            "usuario": item.usuario_nombre or item.usuario_email or "Usuario no registrado",
+            "comentario": item.comentario or "",
+        })
+
+    # Fallback para registros antiguos que no tenían toda la trazabilidad en validacion_adf.
+    if adf.fecha_aprobacion_supervisor and not any(
+        "supervisor" in str(e["etapa"]).lower() and "apro" in str(e["accion"]).lower()
+        for e in eventos
+    ):
+        eventos.append({
+            "fecha": adf.fecha_aprobacion_supervisor,
+            "etapa": "Supervisor",
+            "accion": "Aprobado",
+            "usuario": adf.supervisor_nombre or "Supervisor",
+            "comentario": "Aprobación registrada en el ADF.",
+        })
+    if adf.fecha_aprobacion_jefe and not any(
+        "jefe" in str(e["etapa"]).lower() and "apro" in str(e["accion"]).lower()
+        for e in eventos
+    ):
+        eventos.append({
+            "fecha": adf.fecha_aprobacion_jefe,
+            "etapa": "Jefatura",
+            "accion": "Aprobado",
+            "usuario": adf.jefe_nombre or "Jefatura",
+            "comentario": "Aprobación final registrada en el ADF.",
+        })
+
+    eventos.sort(key=lambda e: e["fecha"] or datetime.min)
+
+    fecha_anterior = None
+    for idx, evento in enumerate(eventos, start=1):
+        icono = _icono_evento(evento["etapa"], evento["accion"])
+        espera = ""
+        if fecha_anterior and evento["fecha"]:
+            espera = f" · +{_duracion_legible(fecha_anterior, evento['fecha'])}"
+        st.markdown(
+            f"**{icono} {idx}. {evento['etapa']} — {evento['accion']}**  \\n"
+            f"{_fecha_hora(evento['fecha'])}{espera} · **{evento['usuario']}**"
+        )
+        if evento["comentario"]:
+            st.caption(evento["comentario"])
+        fecha_anterior = evento["fecha"] or fecha_anterior
+
+    if (adf.estado or "") == "Aprobado" and adf.fecha_aprobacion_jefe:
+        st.success(
+            f"✅ ADF aprobado en {_duracion_legible(adf.fecha_creacion, adf.fecha_aprobacion_jefe)} "
+            f"desde su creación."
+        )
+    else:
+        st.info(
+            f"⏱️ Este ADF lleva {_duracion_legible(adf.fecha_creacion, ahora)} "
+            f"desde su creación y actualmente está en **{adf.estado or 'Borrador'}**."
+        )
 
 
 def mostrar_historial() -> None:
@@ -111,6 +240,9 @@ def mostrar_historial() -> None:
                         st.rerun()
                     else:
                         st.error("No fue posible recuperar el borrador.")
+
+            with st.expander("🕒 Ver flujo y trazabilidad completa"):
+                _mostrar_linea_tiempo(adf)
 
             with st.expander("Ver detalle completo"):
                 st.write(f"**Relato original:** {adf.relato_original}")
