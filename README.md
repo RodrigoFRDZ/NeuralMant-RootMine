@@ -69,3 +69,7 @@ En todas las páginas internas aparece **🏠 ROOTMINE · Inicio** en la parte s
 - Validaciones: descarga de PDF preliminar y visualización de planes antes de aprobar.
 - Planes de acción: fecha compromiso, estado, evidencia, NOTI, status SAP, MOV de mercancías, gasto y revisión IA de respaldos.
 - Historial: muestra respaldos y última revisión IA de cada acción.
+
+
+## v4.1 Cloud
+Persistencia PostgreSQL/Supabase mediante `DATABASE_URL`. El programa mantiene SQLite solo como respaldo para desarrollo sin configuración cloud.

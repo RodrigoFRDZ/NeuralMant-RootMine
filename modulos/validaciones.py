@@ -2,7 +2,7 @@ import json
 import streamlit as st
 from modulos.historial import _pdf_desde_registro
 
-from database.repositorio_adf import aplicar_validacion, historial_validaciones, listar_pendientes_para
+from database.repositorio_adf import aplicar_validacion, historial_validaciones, listar_pendientes_para, resolver_devolucion_jefatura
 
 
 def _detalle_adf(adf) -> None:
@@ -89,12 +89,40 @@ def mostrar_validaciones() -> None:
             if adf.estado == "Pendiente Supervisor":
                 responsable = adf.supervisor_nombre or "Sin supervisor configurado · disponible para reemplazo del Ingeniero"
                 st.caption(f"Etapa actual: **Supervisor** · Responsable: {responsable}")
+            elif adf.estado == "Devuelto por Jefatura":
+                responsable = adf.supervisor_nombre or "Supervisor no configurado · disponible para reemplazo del Ingeniero"
+                st.warning("↩️ **Devuelto por Jefatura**")
+                st.write(f"**Observación de Jefatura:** {adf.comentario_validacion or 'Sin comentario registrado'}")
+                st.caption(f"Revisión actual: **Supervisor** · Responsable: {responsable}")
             else:
                 responsable = adf.jefe_nombre or "Sin jefe configurado · disponible para reemplazo del Ingeniero"
                 st.caption(f"Etapa actual: **Jefe** · Responsable: {responsable}")
 
             if rol == "subgerente":
                 st.info("👁️ El perfil Subgerente puede revisar la trazabilidad y el estado, pero no modifica el flujo de aprobación.")
+            elif adf.estado == "Devuelto por Jefatura":
+                if rol == "ingeniero":
+                    st.info("⚙️ Si intervienes como reemplazo del Supervisor, quedará registrado en la trazabilidad.")
+                comentario = st.text_area(
+                    "Comentario del Supervisor",
+                    key=f"comentario_dev_jef_{adf.id}",
+                    placeholder="Indica qué debe corregirse o deja una nota de la revisión realizada.",
+                )
+                d1, d2 = st.columns(2)
+                if d1.button("↩️ DEVOLVER AL CREADOR", key=f"devolver_creador_{adf.id}", use_container_width=True):
+                    try:
+                        resolver_devolucion_jefatura(adf.id, usuario, "devolver_creador", comentario)
+                        st.warning(f"ADF #{adf.id} devuelto al creador para corrección.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(str(error))
+                if d2.button("✅ REENVIAR A JEFATURA", key=f"reenviar_jefe_{adf.id}", type="primary", use_container_width=True):
+                    try:
+                        resolver_devolucion_jefatura(adf.id, usuario, "reenviar_jefe", comentario)
+                        st.success(f"ADF #{adf.id} reenviado a Jefatura.")
+                        st.rerun()
+                    except Exception as error:
+                        st.error(str(error))
             else:
                 if rol == "ingeniero":
                     st.info("⚙️ Si intervienes fuera del responsable asignado, quedará registrado como reemplazo extraordinario.")
@@ -114,7 +142,10 @@ def mostrar_validaciones() -> None:
                 if b2.button("❌ RECHAZAR", key=f"rechazar_{adf.id}", use_container_width=True):
                     try:
                         actualizado = aplicar_validacion(adf.id, usuario, "rechazar", comentario)
-                        st.warning(f"ADF #{adf.id} rechazado y devuelto al creador.")
+                        if actualizado.estado == "Devuelto por Jefatura":
+                            st.warning(f"ADF #{adf.id} rechazado por Jefatura y devuelto al Supervisor.")
+                        else:
+                            st.warning(f"ADF #{adf.id} rechazado y devuelto al creador.")
                         st.rerun()
                     except Exception as error:
                         st.error(str(error))

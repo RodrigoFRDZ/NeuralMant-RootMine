@@ -177,12 +177,12 @@ def mostrar_indicadores() -> None:
     with col3:
         por_equipo = defaultdict(float)
         for r in datos:
-            eq = getattr(r, "numero_equipo", "") or r.equipo or "Sin equipo"
+            eq = r.equipo or "Sin descripción de equipo"
             por_equipo[eq] += float(getattr(r, "tiempo_perdido_h", 0) or 0)
         _grafico_barras_horizontal(por_equipo, "Equipos con mayor tiempo perdido", max_items=8)
     with col4:
         planes_equipo = Counter()
         for r, _a in acciones:
-            eq = getattr(r, "numero_equipo", "") or r.equipo or "Sin equipo"
+            eq = r.equipo or "Sin descripción de equipo"
             planes_equipo[eq] += 1
         _grafico_barras_horizontal(dict(planes_equipo), "Equipos con más planes de acción", max_items=8)

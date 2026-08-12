@@ -92,8 +92,8 @@ def formatear_contexto_casos(casos: list[CasoSimilar]) -> str:
     bloques = []
     for caso in casos:
         bloques.append(
-            f"ADF #{caso.id} | Centro: {caso.centro} | N° equipo: {caso.numero_equipo} | "
-            f"Equipo: {caso.equipo} | Efecto: {caso.efecto or 'No registrado'} | "
+            f"ADF #{caso.id} | Centro: {caso.centro} | Equipo: {caso.equipo} | "
+            f"Identificador N°: {caso.numero_equipo} | Efecto: {caso.efecto or 'No registrado'} | "
             f"Conclusión: {caso.conclusion or 'No registrada'}"
         )
     return "\n".join(bloques)

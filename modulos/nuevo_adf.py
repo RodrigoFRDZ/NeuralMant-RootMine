@@ -3,8 +3,11 @@ import json
 import streamlit as st
 
 from database.conocimiento import buscar_casos_similares, formatear_contexto_casos
-from database.repositorio_adf import guardar_adf, actualizar_adf, guardar_pdf_adf, obtener_adf, registrar_envio_validacion
-from ia.cliente import (
+from database.repositorio_adf import (
+    guardar_adf, actualizar_adf, guardar_pdf_adf, obtener_adf, registrar_envio_validacion,
+    guardar_borrador_adf, cargar_borrador_adf, actualizar_contenido_borrador,
+)
+from ia.cliente import (mensaje_amigable_ia,
     generar_cadenas_y_planes,
     generar_diagnostico,
     generar_informe_final,
@@ -30,6 +33,17 @@ CATEGORIAS = {
 }
 
 TOTAL_ETAPAS = 9
+
+
+def descripcion_equipo_para_redaccion(texto: str) -> str:
+    """Normaliza solo la narrativa: conserva el valor original en la base."""
+    limpio = " ".join((texto or "").strip().split())
+    letras = [c for c in limpio if c.isalpha()]
+    if letras and all(c.isupper() for c in letras):
+        return limpio.lower()
+    return limpio
+
+
 
 
 def inicializar() -> None:
@@ -114,7 +128,47 @@ def cargar_adf_para_correccion(adf_id: int) -> bool:
     return True
 
 
+def cargar_borrador_para_continuar(adf_id: int) -> bool:
+    usuario = st.session_state.get("usuario_actual") or {}
+    recuperado = cargar_borrador_adf(adf_id, usuario.get("correo", ""))
+    if not recuperado:
+        return False
+    base = {
+        "paso": 1, "centro": str(usuario.get("centro", "")).strip(), "planta": str(usuario.get("planta", "")).strip(),
+        "area": "", "numero_equipo": "", "equipo": "", "aviso_sap": "", "tiempo_perdido_h": 0.0,
+        "relato_original": "", "casos_similares": [], "diagnostico": None, "efecto": "",
+        "principio_funcionamiento": "", "ishikawa_ia": None, "ishikawa_validado": {},
+        "causas_priorizadas": [], "profundizacion": None, "cadenas_causales": [], "plan_prevencion": [],
+        "informe_final": None, "imagen_falla": None, "imagen_equipo": None, "imagen_componente": None,
+        "pdf_bytes": None, "solicitudes_ia": 0, "id_guardado": adf_id, "id_edicion": None,
+        "estado_validacion": "Borrador",
+    }
+    base.update(recuperado)
+    base["id_guardado"] = adf_id
+    st.session_state.nuevo_adf = base
+    st.session_state.pagina = "📝 RootMine · Nuevo ADF"
+    return True
+
+
+def _guardar_avance(paso_destino: int) -> bool:
+    datos = st.session_state.get("nuevo_adf") or {}
+    if not (datos.get("relato_original") or datos.get("equipo") or datos.get("id_guardado") or datos.get("id_edicion")):
+        return True
+    try:
+        usuario = st.session_state.get("usuario_actual") or {}
+        adf_id = guardar_borrador_adf(datos, usuario, paso_destino)
+        datos["id_guardado"] = adf_id
+        datos["paso"] = paso_destino
+        return True
+    except Exception as exc:
+        st.error(f"No fue posible guardar el avance del ADF: {exc}")
+        st.caption("RootMine no avanzará de etapa hasta confirmar que el borrador quedó guardado.")
+        return False
+
+
 def avanzar(paso: int) -> None:
+    if not _guardar_avance(paso):
+        return
     st.session_state.nuevo_adf["paso"] = paso
     st.rerun()
 
@@ -132,10 +186,13 @@ def encabezado(titulo: str, subtitulo: str) -> None:
 
 
 def mostrar_error_ia(error: Exception) -> None:
+    amigable = mensaje_amigable_ia(error)
+    if amigable:
+        st.warning(amigable)
+        st.caption("Tu ADF y el avance realizado siguen guardados; puedes continuar cuando GearBot vuelva a estar disponible.")
+        return
     st.error(f"No fue posible completar la operación de IA: {error}")
-    st.caption(
-        "Revisa la clave, el modelo, la cuota disponible y la conexión a internet."
-    )
+    st.caption("Revisa la conexión a internet o intenta nuevamente en unos minutos.")
 
 
 def indicador_consumo() -> None:
@@ -249,9 +306,10 @@ def paso_relato() -> None:
     try:
         with st.spinner("GearBot está analizando el contexto técnico..."):
             casos = buscar_casos_similares(centro=centro.strip(), numero_equipo=numero_equipo.strip(), equipo=equipo.strip(), relato=relato.strip())
+            equipo_redaccion = descripcion_equipo_para_redaccion(equipo.strip())
             diagnostico = generar_diagnostico(
-                area=f"{area} | Centro: {centro.strip()} - {datos.get('planta','')} | N° equipo: {numero_equipo.strip()}",
-                equipo=equipo.strip(),
+                area=f"{area} | Centro: {centro.strip()} - {datos.get('planta','')} | Identificador interno del activo: {numero_equipo.strip()} (no usar como nombre del equipo en la redacción)",
+                equipo=equipo_redaccion,
                 aviso_sap=aviso.strip(),
                 relato=relato.strip(),
                 casos_similares=formatear_contexto_casos(casos),
@@ -346,7 +404,7 @@ def paso_diagnostico() -> None:
             with st.spinner("GearBot está construyendo el Ishikawa 6M..."):
                 ishikawa = generar_ishikawa(
                     area=datos["area"],
-                    equipo=datos["equipo"],
+                    equipo=descripcion_equipo_para_redaccion(datos["equipo"]),
                     relato=datos["relato_original"],
                     fenomeno=datos["efecto"],
                     principio_funcionamiento=datos["principio_funcionamiento"],
@@ -485,6 +543,7 @@ def paso_priorizacion() -> None:
             return
         datos["causas_priorizadas"] = priorizadas
         contexto = (
+            f"Equipo: {descripcion_equipo_para_redaccion(datos['equipo'])}\n"
             f"Relato: {datos['relato_original']}\n"
             f"Fenómeno: {datos['efecto']}\n"
             f"Hechos: {json.dumps(datos['diagnostico']['hechos_confirmados'], ensure_ascii=False)}"
@@ -554,16 +613,22 @@ def paso_causal() -> None:
                         key=f"resp_{indice_cadena}_{indice_nivel}", height=85,
                         help="Redáctala como afirmación técnica. Evita comenzar con 'porque'.",
                     )
-                    justificacion = st.text_area(
-                        "Ayuda / justificación técnica de la IA",
-                        value=nivel["justificacion_tecnica"],
-                        key=f"just_{indice_cadena}_{indice_nivel}", height=90,
-                    )
-                    evidencia = st.text_area(
-                        "Evidencia necesaria para validarlo",
-                        value=nivel["evidencia_requerida"],
-                        key=f"evid_{indice_cadena}_{indice_nivel}", height=70,
-                    )
+                    with st.expander("🤖 Ayuda / justificación técnica de la IA", expanded=False):
+                        justificacion = st.text_area(
+                            "Justificación técnica",
+                            value=nivel["justificacion_tecnica"],
+                            key=f"just_{indice_cadena}_{indice_nivel}",
+                            height=90,
+                            label_visibility="collapsed",
+                        )
+                    with st.expander("🔎 Evidencia necesaria para validarlo", expanded=False):
+                        evidencia = st.text_area(
+                            "Evidencia requerida",
+                            value=nivel["evidencia_requerida"],
+                            key=f"evid_{indice_cadena}_{indice_nivel}",
+                            height=80,
+                            label_visibility="collapsed",
+                        )
                     niveles_editados.append({
                         "nivel": nivel["nivel"],
                         "pregunta": pregunta.strip(),
@@ -666,11 +731,16 @@ def paso_planes() -> None:
         datos["plan_prevencion"] = validas
 
         contexto = json.dumps({
+            "regla_redaccion_equipo": (
+                "En toda narrativa técnica refiérete al activo por su descripción: "
+                f"{descripcion_equipo_para_redaccion(datos['equipo'])}. El N° {datos['numero_equipo']} es solo un identificador interno "
+                "y no debe utilizarse como nombre del equipo."
+            ),
             "centro": datos["centro"],
             "planta": datos.get("planta", ""),
             "area": datos["area"],
             "numero_equipo": datos["numero_equipo"],
-            "equipo": datos["equipo"],
+            "equipo": descripcion_equipo_para_redaccion(datos["equipo"]),
             "aviso_sap": datos["aviso_sap"],
             "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
             "relato_original": datos["relato_original"],
@@ -759,6 +829,8 @@ def paso_informe() -> None:
         }
         if datos.get("id_edicion"):
             adf_id = actualizar_adf(int(datos["id_edicion"]), payload_adf)
+        elif datos.get("id_guardado"):
+            adf_id = actualizar_contenido_borrador(int(datos["id_guardado"]), payload_adf)
         else:
             adf_id = guardar_adf(payload_adf)
         datos["id_guardado"] = adf_id
@@ -837,12 +909,12 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.0 · análisis completado",
+        "RootMine v4.1.5 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
-    st.write(f"**N° de Equipo:** {datos['numero_equipo']}")
     st.write(f"**Equipo:** {datos['equipo']}")
+    st.caption(f"N° de equipo (identificador): {datos['numero_equipo']}")
     st.write(f"**Fenómeno:** {datos['efecto']}")
     st.write(f"**Solicitudes IA:** {datos['solicitudes_ia']}")
     adf = obtener_adf(datos.get('id_guardado')) if datos.get('id_guardado') else None
@@ -862,7 +934,7 @@ def mostrar_nuevo_adf() -> None:
     inicializar()
     paso = st.session_state.nuevo_adf["paso"]
     st.markdown(
-        f'<div class="step-chip">RootMine v4.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.1.5 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)

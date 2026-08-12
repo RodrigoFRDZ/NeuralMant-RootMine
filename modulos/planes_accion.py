@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 import streamlit as st
 
 from database.repositorio_adf import listar_adf, actualizar_plan_prevencion
-from ia.cliente import revisar_evidencia_plan
+from ia.cliente import revisar_evidencia_plan, mensaje_amigable_ia
 
 
 def _json(texto, defecto):
@@ -238,7 +238,7 @@ def mostrar_planes_accion() -> None:
                             contexto = f"""ADF #{adf.id}
 Centro: {adf.centro or ''}
 Equipo: {adf.equipo}
-N° equipo: {getattr(adf,'numero_equipo','') or ''}
+Equipo: {adf.equipo or 'Sin descripción'} · N° identificador: {getattr(adf,'numero_equipo','') or '—'}
 Área: {adf.area}
 Plan de acción: {titulo}
 Objetivo: {accion.get('objetivo','')}
@@ -268,7 +268,12 @@ Analiza directamente todos los respaldos adjuntos. Para capturas SAP verifica en
                                 _mostrar_revision(rev_dict)
                                 st.success("Revisión guardada en el historial del plan.")
                             except Exception as exc:
-                                st.error(f"No fue posible revisar la evidencia: {exc}")
+                                amigable = mensaje_amigable_ia(exc)
+                                if amigable:
+                                    st.warning(amigable)
+                                    st.caption("El respaldo queda disponible y podrás pedir la revisión de GearBot más tarde.")
+                                else:
+                                    st.error(f"No fue posible revisar la evidencia: {exc}")
                     elif accion.get("revision_ia"):
                         st.markdown("#### Última revisión de GearBot")
                         _mostrar_revision(accion["revision_ia"])

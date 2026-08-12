@@ -3,17 +3,17 @@ from collections import Counter
 
 import streamlit as st
 
-from database.repositorio_adf import listar_adf, listar_pendientes_para, listar_requiere_correccion_para
-from modulos.nuevo_adf import cargar_adf_para_correccion
+from database.repositorio_adf import listar_adf, listar_pendientes_para, listar_requiere_correccion_para, listar_borradores_para
+from database.metricas_sistema import resumen_uso_ia, uso_base_datos, mb
+from ia.cliente import limites_configurados, obtener_configuracion
+from modulos.nuevo_adf import cargar_adf_para_correccion, cargar_borrador_para_continuar
 
 
-ADMIN_CORREOS = {"rfernandezc@agrosuper.com"}
 
 def _es_admin_rootmine(usuario: dict) -> bool:
-    correo = (usuario.get("correo") or usuario.get("email") or "").strip().lower()
-    nombre = (usuario.get("nombre") or "").strip().lower()
-    rol = (usuario.get("rol") or "").strip().lower()
-    return correo in ADMIN_CORREOS or ("rodrigo" in nombre and "fern" in nombre and rol == "ingeniero")
+    return bool(usuario.get("es_admin", False))
+
+
 
 
 def _json(texto: str, defecto):
@@ -90,7 +90,26 @@ def mostrar_inicio() -> None:
             st.session_state.pagina = "✅ Validaciones"
             st.rerun()
 
-    # Bandeja personal: todo rechazo vuelve al creador para corrección y reenvío.
+    borradores = listar_borradores_para(usuario_actual.get("correo", ""))
+    if borradores:
+        st.markdown("### 📝 ADF en progreso")
+        st.info(f"Tienes {len(borradores)} análisis sin finalizar. El avance está guardado en la base de datos.")
+        for adf in borradores[:8]:
+            with st.container(border=True):
+                cinfo, caccion = st.columns([4, 1.25], vertical_alignment="center")
+                with cinfo:
+                    nombre_equipo = adf.equipo if adf.equipo and adf.equipo != "ADF en progreso" else "Análisis sin título"
+                    st.markdown(f"**ADF #{adf.id} · {nombre_equipo}**")
+                    st.caption(f"{adf.centro or 's/centro'} · {adf.area or 's/área'} · {adf.etapa}")
+                    st.write(f"Última actualización: **{adf.fecha_actualizacion:%d/%m/%Y %H:%M}**")
+                with caccion:
+                    if st.button("▶️ Continuar análisis", key=f"continuar_borrador_{adf.id}", type="primary", use_container_width=True):
+                        if cargar_borrador_para_continuar(adf.id):
+                            st.rerun()
+                        else:
+                            st.error("No fue posible abrir este borrador.")
+
+    # Bandeja del creador: llegan rechazos del Supervisor o devoluciones derivadas por el Supervisor tras una observación de Jefatura.
     correcciones = listar_requiere_correccion_para(usuario_actual.get("correo", ""))
     if correcciones:
         st.markdown("### 🛠️ ADF devueltos para corrección")
@@ -140,6 +159,64 @@ def mostrar_inicio() -> None:
 
     # Acceso exclusivo del administrador RootMine.
     if _es_admin_rootmine(usuario_actual):
+        st.markdown("#### 📡 Capacidad RootMine")
+        uso_ia = resumen_uso_ia()
+        limites = limites_configurados()
+        almacenamiento = uso_base_datos()
+        modelo_ia = obtener_configuracion().modelo
+
+        cap1, cap2, cap3 = st.columns(3)
+        limite_h = limites.get("hora", 0)
+        limite_d = limites.get("dia", 0)
+
+        cap1.metric(
+            "GearBot · última hora",
+            f"{uso_ia.get('ultima_hora', 0)} / {limite_h if limite_h else '—'}",
+            help="Consultas enviadas por RootMine durante los últimos 60 minutos.",
+        )
+        cap2.metric(
+            "GearBot · hoy",
+            f"{uso_ia.get('hoy', 0)} / {limite_d if limite_d else '—'}",
+            help="Consultas enviadas por RootMine durante el día actual (hora de Chile).",
+        )
+
+        if almacenamiento.get("limite_bytes", 0):
+            usados_mb = mb(almacenamiento.get("usados_bytes", 0))
+            libres_mb = mb(almacenamiento.get("disponibles_bytes", 0))
+            cap3.metric(
+                "Nube Supabase",
+                f"{libres_mb:.1f} MB libres",
+                delta=f"{usados_mb:.1f} MB usados",
+                delta_color="off",
+                help="Uso de la base PostgreSQL operacional de RootMine.",
+            )
+            st.progress(min(1.0, almacenamiento.get("porcentaje", 0) / 100.0))
+            st.caption(
+                f"☁️ Base de datos: {usados_mb:.1f} MB usados de 500 MB · "
+                f"{libres_mb:.1f} MB disponibles. Modelo GearBot: {modelo_ia}."
+            )
+        else:
+            cap3.metric("Base de datos", almacenamiento.get("backend", "No disponible"))
+
+        if not limite_h or not limite_d:
+            st.info(
+                "Para mostrar el porcentaje exacto de cuota de GearBot, configura "
+                "`GEMINI_HOURLY_LIMIT` y `GEMINI_DAILY_LIMIT` en Secrets con los "
+                "límites que muestra Google AI Studio para este proyecto/modelo. "
+                "RootMine ya está contando las consultas automáticamente."
+            )
+        elif limite_h or limite_d:
+            if limite_h:
+                st.progress(min(1.0, uso_ia.get("ultima_hora", 0) / max(1, limite_h)))
+            if limite_d:
+                st.progress(min(1.0, uso_ia.get("hoy", 0) / max(1, limite_d)))
+
+        if uso_ia.get("rechazos_cuota_hoy", 0):
+            st.warning(
+                f"GearBot ha registrado {uso_ia['rechazos_cuota_hoy']} intento(s) "
+                "rechazados por cuota durante el día."
+            )
+
         st.markdown("#### ⚙️ Administración")
         adm_col, _ = st.columns([1.05, 3.95])
         with adm_col:

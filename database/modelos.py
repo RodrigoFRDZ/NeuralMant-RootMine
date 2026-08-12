@@ -35,6 +35,8 @@ class ADF(Base):
     plan_prevencion: Mapped[str] = mapped_column(Text, default="")
     leccion_aprendida: Mapped[str] = mapped_column(Text, default="")
     pdf_archivo: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    borrador_paso: Mapped[int] = mapped_column(Integer, default=1)
+    borrador_json: Mapped[str] = mapped_column(Text, default="")
 
     supervisor_nombre: Mapped[str] = mapped_column(String(150), default="")
     supervisor_email: Mapped[str] = mapped_column(String(180), default="")
@@ -84,3 +86,43 @@ class LlaveAcceso(Base):
     salt_b64: Mapped[str] = mapped_column(String(120))
     hash_b64: Mapped[str] = mapped_column(String(180))
     fecha_creacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+
+
+class UsuarioRootMine(Base):
+    __tablename__ = "usuario_rootmine"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rut: Mapped[str] = mapped_column(String(40), default="")
+    nombre: Mapped[str] = mapped_column(String(180))
+    correo: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    area: Mapped[str] = mapped_column(String(120), default="")
+    job_code: Mapped[str] = mapped_column(String(180), default="")
+    rol: Mapped[str] = mapped_column(String(80), default="tecnico", index=True)
+    centro: Mapped[str] = mapped_column(String(40), default="", index=True)
+    planta: Mapped[str] = mapped_column(String(120), default="")
+    activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    es_admin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    responsable_de: Mapped[str] = mapped_column(Text, default="[]")
+    fecha_creacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    fecha_actualizacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class SesionRootMine(Base):
+    __tablename__ = "sesion_rootmine"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    correo: Mapped[str] = mapped_column(String(180), index=True)
+    fecha_creacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    ultima_actividad: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
+
+
+class UsoIA(Base):
+    __tablename__ = "uso_ia"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fecha: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    modelo: Mapped[str] = mapped_column(String(120), default="")
+    operacion: Mapped[str] = mapped_column(String(120), default="")
+    resultado: Mapped[str] = mapped_column(String(40), default="ok", index=True)
+    usuario_email: Mapped[str] = mapped_column(String(180), default="", index=True)

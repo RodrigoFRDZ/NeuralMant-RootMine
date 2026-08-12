@@ -1,6 +1,7 @@
 import streamlit as st
 
 from database.llaves_acceso import eliminar_llave, tiene_llave
+from database.repositorio_adf import listar_adf, eliminar_adf_completo
 from database.usuarios import (
     actualizar_usuario,
     cargar_centros,
@@ -10,15 +11,24 @@ from database.usuarios import (
     nombre_centro,
 )
 
-ADMIN_CORREOS = {"rfernandezc@agrosuper.com"}
-ROLES = ["tecnico", "senior", "supervisor", "jefe", "ingeniero", "subgerente"]
+ROLES = ["tecnico", "senior", "programador_mantenimiento", "ingeniero_confiabilidad", "ingeniero_procesos", "supervisor", "jefe", "subgerente"]
+ROL_ADMIN = "ingeniero"
+
+ETIQUETA_ROL = {
+    "tecnico": "Técnico", "senior": "Senior",
+    "programador_mantenimiento": "Programador de Mantenimiento",
+    "ingeniero_confiabilidad": "Ingeniero de Confiabilidad",
+    "ingeniero_procesos": "Ingeniero de Procesos",
+    "supervisor": "Supervisor", "jefe": "Jefe",
+    "ingeniero": "Ingeniero de Mantenimiento", "subgerente": "Subgerente",
+}
 AREAS_BASE = ["FAENA", "PROCESOS", "CONGELADO", "ELABORADOS", "SERVICIOS", "GENERACIÓN", "SADEMA", "ADM-DESP", "PLANIFICACIÓN", "INGENIERÍA"]
 
 
 def _es_admin(usuario: dict) -> bool:
-    correo = (usuario.get("correo") or usuario.get("email") or "").strip().lower()
-    nombre = (usuario.get("nombre") or "").strip().lower()
-    return correo in ADMIN_CORREOS or ("rodrigo" in nombre and "fern" in nombre and (usuario.get("rol") or "").strip().lower() == "ingeniero")
+    return bool(usuario.get("es_admin", False))
+
+
 
 
 def _centros_opciones():
@@ -51,7 +61,7 @@ def mostrar_administracion() -> None:
     c2.metric("Activas", activos)
     c3.metric("Validadores activos", validadores)
 
-    tab1, tab2, tab3 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves"])
+    tab1, tab2, tab3, tab4 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves", "🗑️ Administrar ADF"])
 
     with tab1:
         st.subheader("Nueva cuenta")
@@ -64,7 +74,9 @@ def mostrar_administracion() -> None:
         area = col4.selectbox("Área", AREAS_BASE, key="adm_nuevo_area")
 
         col5, col6 = st.columns(2)
-        rol = col5.selectbox("Rol RootMine", ROLES, format_func=lambda x: x.capitalize(), key="adm_nuevo_rol")
+        rol = col5.selectbox("Rol RootMine", ROLES, format_func=lambda x: ETIQUETA_ROL.get(x, x.replace("_", " ").title()), key="adm_nuevo_rol")
+        es_admin_nuevo = st.checkbox("Administrador RootMine", value=False, key="adm_nuevo_es_admin",
+                                     help="Permiso independiente del cargo. Solo un administrador puede otorgarlo.")
         cargo = col6.text_input("Cargo / Job code", key="adm_nuevo_cargo")
 
         responsabilidades = st.text_input(
@@ -72,7 +84,7 @@ def mostrar_administracion() -> None:
             placeholder="Ej.: FAENA, PROCESOS  |  Usa TODAS para responsabilidad transversal",
             key="adm_nuevo_resp",
         )
-        st.caption("Para técnicos y senior puedes dejar 'Responsable de' vacío.")
+        st.caption("Para perfiles técnicos (Técnico, Senior, Programador, Ing. Confiabilidad e Ing. Procesos) deja 'Responsable de' vacío.")
 
         if st.button("➕ Crear cuenta", type="primary", use_container_width=True):
             codigo = _codigo_centro(centro_etiqueta)
@@ -84,6 +96,7 @@ def mostrar_administracion() -> None:
                     "area": area,
                     "job_code": cargo,
                     "rol": rol,
+                    "es_admin": es_admin_nuevo,
                     "centro": codigo,
                     "planta": nombre_centro(codigo),
                     "activo": True,
@@ -98,7 +111,7 @@ def mostrar_administracion() -> None:
         st.subheader("Editar o eliminar cuenta")
         usuarios_ordenados = sorted(usuarios, key=lambda u: ((u.get("nombre") or ""), (u.get("correo") or "")))
         opciones = {
-            f"{u.get('nombre','Sin nombre')} · {u.get('rol','').capitalize()} · {u.get('correo','')}" : u
+            f"{u.get('nombre','Sin nombre')} · {ETIQUETA_ROL.get(u.get('rol',''), u.get('rol','').replace('_',' ').title())} · {u.get('correo','')}" : u
             for u in usuarios_ordenados
         }
         if not opciones:
@@ -123,7 +136,16 @@ def mostrar_administracion() -> None:
 
             e5, e6 = st.columns(2)
             rol_actual = (seleccionado.get("rol") or "tecnico").lower()
-            rol_e = e5.selectbox("Rol", ROLES, index=ROLES.index(rol_actual) if rol_actual in ROLES else 0, format_func=lambda x: x.capitalize(), key=f"adm_rol_{correo_original}")
+            roles_edicion = list(ROLES)
+            if ROL_ADMIN not in roles_edicion:
+                roles_edicion.append(ROL_ADMIN)
+            rol_e = e5.selectbox("Rol", roles_edicion, index=roles_edicion.index(rol_actual) if rol_actual in roles_edicion else 0, format_func=lambda x: ETIQUETA_ROL.get(x, x.replace("_", " ").title()), key=f"adm_rol_{correo_original}")
+            es_admin_e = st.checkbox(
+                "Administrador RootMine",
+                value=bool(seleccionado.get("es_admin", False)),
+                key=f"adm_es_admin_{correo_original}",
+                help="Este permiso no depende del rol o cargo del usuario.",
+            )
             cargo_e = e6.text_input("Cargo / Job code", value=seleccionado.get("job_code", ""), key=f"adm_cargo_{correo_original}")
 
             resp_actual = seleccionado.get("responsable_de") or []
@@ -144,6 +166,7 @@ def mostrar_administracion() -> None:
                             "planta": nombre_centro(nuevo_codigo),
                             "area": area_e,
                             "rol": rol_e,
+                            "es_admin": es_admin_e,
                             "job_code": cargo_e,
                             "responsable_de": _resp_desde_texto(resp_e),
                             "activo": activo_e,
@@ -158,9 +181,14 @@ def mostrar_administracion() -> None:
 
             with b2:
                 es_propia = correo_original.lower() == (usuario_actual.get("correo") or "").lower()
+                es_ultimo_admin = bool(seleccionado.get("es_admin", False)) and sum(
+                    1 for u in usuarios if u.get("activo", True) and u.get("es_admin", False)
+                ) <= 1
                 confirmar = st.checkbox("Confirmar eliminación", key=f"adm_confirmar_del_{correo_original}", disabled=es_propia)
                 if es_propia:
                     st.caption("Tu propia cuenta administradora no puede eliminarse desde RootMine.")
+                elif es_ultimo_admin:
+                    st.caption("No puedes eliminar la última cuenta administradora activa de RootMine.")
                 if st.button("🗑️ Eliminar cuenta", use_container_width=True, disabled=es_propia or not confirmar, key=f"adm_del_{correo_original}"):
                     if tiene_llave(correo_original):
                         eliminar_llave(correo_original)
@@ -182,14 +210,14 @@ def mostrar_administracion() -> None:
             st.info("No hay validadores activos.")
         else:
             opciones_v = {
-                f"{u.get('nombre')} · {u.get('rol','').capitalize()} · {u.get('correo')}" : u
+                f"{u.get('nombre')} · {ETIQUETA_ROL.get(u.get('rol',''), u.get('rol','').replace('_',' ').title())} · {u.get('correo')}" : u
                 for u in validadores_lista
             }
             et_v = st.selectbox("Selecciona un validador", list(opciones_v.keys()), key="adm_reset_sel")
             val = opciones_v[et_v]
             correo_v = val.get("correo", "")
             r1, r2, r3 = st.columns(3)
-            r1.metric("Rol", val.get("rol", "").capitalize())
+            r1.metric("Rol", ETIQUETA_ROL.get(val.get("rol", ""), val.get("rol", "").replace("_", " ").title()))
             r2.metric("Centro", val.get("centro", "—"))
             r3.metric("Llave", "Configurada" if tiene_llave(correo_v) else "Sin crear")
             if tiene_llave(correo_v):
@@ -200,3 +228,88 @@ def mostrar_administracion() -> None:
                         st.rerun()
             else:
                 st.success("Este usuario no tiene una llave creada actualmente.")
+
+
+    with tab4:
+        st.subheader("Administración de ADF")
+        st.warning(
+            "Esta sección elimina registros de forma permanente de la base de datos. "
+            "Úsala principalmente para limpiar ADF de prueba."
+        )
+
+        adfs = listar_adf()
+        if not adfs:
+            st.info("No hay ADF registrados en la base.")
+        else:
+            busqueda_adf = st.text_input(
+                "Buscar ADF",
+                placeholder="N° ADF, equipo, N° equipo, área, centro o creador",
+                key="adm_buscar_adf",
+            ).strip().lower()
+
+            filtrados = []
+            for adf in adfs:
+                texto = " ".join([
+                    str(adf.id),
+                    adf.equipo or "",
+                    getattr(adf, "numero_equipo", "") or "",
+                    adf.area or "",
+                    getattr(adf, "centro", "") or "",
+                    getattr(adf, "planta", "") or "",
+                    adf.creado_por or "",
+                    adf.creado_por_email or "",
+                    adf.estado or "",
+                ]).lower()
+                if not busqueda_adf or busqueda_adf in texto:
+                    filtrados.append(adf)
+
+            if not filtrados:
+                st.info("No se encontraron ADF con ese filtro.")
+            else:
+                opciones_adf = {
+                    (
+                        f"ADF #{adf.id} · {adf.equipo or 'Sin equipo'} · "
+                        f"{getattr(adf, 'centro', '') or 's/centro'} · "
+                        f"{adf.area or 's/área'} · {adf.estado or 'Borrador'}"
+                    ): adf
+                    for adf in filtrados
+                }
+                etiqueta_adf = st.selectbox(
+                    "Selecciona el ADF que deseas revisar",
+                    list(opciones_adf.keys()),
+                    key="adm_adf_sel",
+                )
+                adf_sel = opciones_adf[etiqueta_adf]
+
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("ADF", f"#{adf_sel.id}")
+                c2.metric("Centro", getattr(adf_sel, "centro", "") or "—")
+                c3.metric("Área", adf_sel.area or "—")
+                c4.metric("Estado", adf_sel.estado or "Borrador")
+
+                st.markdown(f"**Equipo:** {adf_sel.equipo or 'No registrado'}")
+                st.markdown(f"**N° equipo:** {getattr(adf_sel, 'numero_equipo', '') or 'No registrado'}")
+                st.markdown(f"**Creado por:** {adf_sel.creado_por or 'No registrado'}")
+                st.caption(
+                    "Al eliminarlo también se borran su trazabilidad de validación, "
+                    "notificaciones, planes y respaldos guardados dentro del ADF."
+                )
+
+                confirmar_id = st.text_input(
+                    f"Para confirmar, escribe el número del ADF: {adf_sel.id}",
+                    key=f"adm_confirmar_adf_{adf_sel.id}",
+                ).strip()
+
+                if st.button(
+                    "🗑️ Eliminar ADF permanentemente",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=confirmar_id != str(adf_sel.id),
+                    key=f"adm_eliminar_adf_{adf_sel.id}",
+                ):
+                    resultado = eliminar_adf_completo(adf_sel.id)
+                    if resultado.get("ok"):
+                        st.success(f"ADF #{adf_sel.id} eliminado correctamente de la base.")
+                        st.rerun()
+                    else:
+                        st.error(resultado.get("mensaje", "No fue posible eliminar el ADF."))

@@ -2,9 +2,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from database.conexion import crear_tablas
-from database.usuarios import buscar_usuario_por_correo, resumen_maestro
+from database.conexion import crear_tablas, descripcion_backend, usando_nube
+from database.usuarios import buscar_usuario_por_correo, resumen_maestro, etiqueta_rol, inicializar_maestro_usuarios
 from database.llaves_acceso import crear_llave, requiere_llave, tiene_llave, validar_llave
+from database.sesiones import crear_sesion, validar_y_tocar_sesion, cerrar_sesion
 from ia.cliente import obtener_configuracion
 from modulos.acerca import mostrar_acerca
 from modulos.historial import mostrar_historial
@@ -25,13 +26,11 @@ st.set_page_config(
 )
 
 
-ADMIN_CORREOS = {"rfernandezc@agrosuper.com"}
 
 def es_admin_rootmine(usuario: dict) -> bool:
-    correo = (usuario.get("correo") or usuario.get("email") or "").strip().lower()
-    nombre = (usuario.get("nombre") or "").strip().lower()
-    # Correo oficial del administrador + respaldo para la cuenta maestra precargada.
-    return correo in ADMIN_CORREOS or ("rodrigo" in nombre and "fern" in nombre and (usuario.get("rol") or "").strip().lower() == "ingeniero")
+    return bool(usuario.get("es_admin", False))
+
+
 
 
 def cargar_estilos() -> None:
@@ -45,6 +44,7 @@ def inicializar_sesion() -> None:
     st.session_state.setdefault("usuario_actual", None)
     st.session_state.setdefault("pagina", "🏠 Dashboard")
     st.session_state.setdefault("login_pendiente", None)
+    st.session_state.setdefault("token_sesion", "")
 
 
 def marca_compacta() -> None:
@@ -84,10 +84,60 @@ def barra_inicio(pagina: str) -> None:
         st.markdown(f'<div class="rootmine-breadcrumb">ROOTMINE <span>›</span> {etiqueta}</div>', unsafe_allow_html=True)
     st.markdown('<div class="rootmine-top-divider"></div>', unsafe_allow_html=True)
 
-def _completar_login(usuario: dict) -> None:
+def _token_sesion_actual() -> str:
+    token_estado = str(st.session_state.get("token_sesion") or "").strip()
+    if token_estado:
+        return token_estado
+    try:
+        return str(st.query_params.get("rm_session", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _guardar_token_sesion(token: str) -> None:
+    st.session_state.token_sesion = token
+    st.query_params["rm_session"] = token
+
+
+def _limpiar_token_sesion() -> None:
+    st.session_state.token_sesion = ""
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+
+
+def restaurar_sesion_persistente() -> None:
+    """Restaura login tras F5 y expira después de 30 minutos sin interacción."""
+    token = _token_sesion_actual()
+    if not token:
+        return
+    correo = validar_y_tocar_sesion(token)
+    if not correo:
+        st.session_state.usuario = ""
+        st.session_state.usuario_actual = None
+        st.session_state.login_pendiente = None
+        _limpiar_token_sesion()
+        return
+    usuario = buscar_usuario_por_correo(correo)
+    if not usuario:
+        cerrar_sesion(token)
+        st.session_state.usuario = ""
+        st.session_state.usuario_actual = None
+        _limpiar_token_sesion()
+        return
+    st.session_state.token_sesion = token
     st.session_state.usuario_actual = usuario
     st.session_state.usuario = usuario["nombre"]
     st.session_state.login_pendiente = None
+
+
+def _completar_login(usuario: dict) -> None:
+    token = crear_sesion(usuario.get("correo", ""))
+    st.session_state.usuario_actual = usuario
+    st.session_state.usuario = usuario["nombre"]
+    st.session_state.login_pendiente = None
+    _guardar_token_sesion(token)
     st.rerun()
 
 
@@ -139,7 +189,7 @@ def mostrar_identificacion() -> None:
                     _completar_login(usuario)
         else:
             nombre = pendiente.get("nombre", "Usuario")
-            rol = pendiente.get("rol", "").capitalize()
+            rol = etiqueta_rol(pendiente.get("rol", ""))
             correo = pendiente.get("correo", "")
             st.markdown('<div class="login-form-title">Acceso de validador</div>', unsafe_allow_html=True)
             st.caption(f"{nombre} · {rol}")
@@ -181,8 +231,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.0 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.0 · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.1.5 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.1.5 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
 
 def mostrar_menu() -> str:
     usuario = st.session_state.usuario_actual or {}
@@ -191,7 +241,7 @@ def mostrar_menu() -> str:
         st.caption("GearBot · Asistente de análisis inteligente")
         st.divider()
         st.markdown(f"**Hola, {usuario.get('nombre', st.session_state.usuario).split()[0]}**")
-        st.caption(f"{usuario.get('rol','').capitalize()} · {usuario.get('area','')}")
+        st.caption(f"{etiqueta_rol(usuario.get('rol',''))} · {usuario.get('area','')}")
         if usuario.get("centro"):
             st.caption(f"Centro {usuario.get('centro')} · {usuario.get('planta','')}")
         mostrar_campana(usuario)
@@ -211,25 +261,32 @@ def mostrar_menu() -> str:
             st.success(f"IA centralizada · {configuracion.modelo}")
         else:
             st.error("Falta GEMINI_API_KEY central")
+        st.caption(f"💾 Datos: {descripcion_backend()}")
         st.caption("🔔 Notificaciones internas activas")
-        st.caption("✉️ Correo externo desactivado en v4.0")
+        st.caption("✉️ Correo externo desactivado en v4.1")
 
         if st.button("Cerrar sesión", use_container_width=True):
+            token = _token_sesion_actual()
+            if token:
+                cerrar_sesion(token)
             st.session_state.usuario = ""
             st.session_state.usuario_actual = None
             st.session_state.pagina = "🏠 Dashboard"
             st.session_state.login_pendiente = None
             st.session_state.pop("nuevo_adf", None)
+            _limpiar_token_sesion()
             st.rerun()
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.0<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.1.5 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
 def main() -> None:
     cargar_estilos()
     crear_tablas()
+    inicializar_maestro_usuarios()
     inicializar_sesion()
+    restaurar_sesion_persistente()
     if not st.session_state.usuario_actual:
         mostrar_identificacion()
         return

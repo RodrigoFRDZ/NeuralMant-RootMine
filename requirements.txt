@@ -4,3 +4,5 @@ google-genai>=1.30
 pydantic>=2.8,<3
 reportlab>=4.2,<5
 Pillow>=10,<12
+
+psycopg2-binary>=2.9,<3

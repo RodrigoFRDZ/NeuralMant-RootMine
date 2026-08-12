@@ -3,7 +3,7 @@ import json
 import streamlit as st
 
 from database.repositorio_adf import listar_adf
-from modulos.nuevo_adf import cargar_adf_para_correccion
+from modulos.nuevo_adf import cargar_adf_para_correccion, cargar_borrador_para_continuar
 from reportes.pdf_adf import generar_pdf_adf
 
 
@@ -104,6 +104,13 @@ def mostrar_historial() -> None:
                     )
                 except Exception as error:
                     st.warning(f"No fue posible preparar el PDF: {error}")
+
+            if (adf.estado or "") == "Borrador" and (adf.creado_por_email or "").lower().strip() == ((st.session_state.get("usuario_actual") or {}).get("correo", "").lower().strip()):
+                if st.button("▶️ Continuar este borrador", key=f"hist_continuar_{adf.id}", use_container_width=True):
+                    if cargar_borrador_para_continuar(adf.id):
+                        st.rerun()
+                    else:
+                        st.error("No fue posible recuperar el borrador.")
 
             with st.expander("Ver detalle completo"):
                 st.write(f"**Relato original:** {adf.relato_original}")

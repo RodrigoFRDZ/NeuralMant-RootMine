@@ -14,6 +14,7 @@ Reglas:
 6. No inventes mediciones, fechas, responsables ni inspecciones.
 7. Formula preguntas concretas para completar la evidencia.
 8. Escribe en español técnico, natural y defendible.
+9. Cuando exista descripción del equipo y número/código de activo, usa SIEMPRE la descripción del equipo para referirte al activo en la narrativa. El número es solo un identificador secundario.
 """
 
 ISHIKAWA_SISTEMA = """
@@ -28,6 +29,7 @@ Reglas:
 5. No uses causas vagas como 'falta de mantenimiento' o 'error humano'.
 6. No declares causa raíz; todas son hipótesis que deben validarse.
 7. Mantén coherencia con el principio de funcionamiento y los hechos entregados.
+8. Refiérete al activo por su descripción, nunca por su número/código como si fuera su nombre.
 """
 
 CAUSAL_SISTEMA = """
@@ -48,6 +50,7 @@ Reglas de redacción:
    responsables ni plazos, usa 'Por definir' cuando no estén informados.
 10. No confundas reemplazar un componente con eliminar la causa que originó su
    falla.
+11. Cuando menciones el activo, utiliza su descripción técnica; el número/código es solo identificador.
 """
 
 INFORME_SISTEMA = """
@@ -63,6 +66,7 @@ Reglas:
    planes preventivos sin contradicciones.
 5. Usa español profesional, claro y apto para presentar a jefatura.
 6. Si falta evidencia para confirmar la causa raíz, indícalo sin ambigüedad.
+7. En la narrativa usa la descripción del equipo como nombre del activo. No redactes frases como "el equipo 123456"; el número solo puede figurar como identificador secundario.
 """
 
 

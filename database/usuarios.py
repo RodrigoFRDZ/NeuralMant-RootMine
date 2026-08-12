@@ -1,9 +1,39 @@
+from __future__ import annotations
+
 import json
 import unicodedata
 from pathlib import Path
 
-RUTA_USUARIOS = Path("data/usuarios_adf.json")
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from database.conexion import engine
+from database.modelos import UsuarioRootMine
+
+RUTA_USUARIOS = Path("data/usuarios_adf.json")  # semilla inicial, no fuente operacional
 RUTA_CENTROS = Path("data/centros.json")
+
+ROLES_TECNICOS = {
+    "tecnico", "senior", "programador_mantenimiento",
+    "ingeniero_confiabilidad", "ingeniero_procesos",
+}
+ROLES_VALIDADORES = {"supervisor", "jefe", "ingeniero", "subgerente"}
+
+ETIQUETAS_ROL = {
+    "tecnico": "Técnico",
+    "senior": "Senior",
+    "programador_mantenimiento": "Programador de Mantenimiento",
+    "ingeniero_confiabilidad": "Ingeniero de Confiabilidad",
+    "ingeniero_procesos": "Ingeniero de Procesos",
+    "supervisor": "Supervisor",
+    "jefe": "Jefe",
+    "ingeniero": "Ingeniero de Mantenimiento",
+    "subgerente": "Subgerente",
+}
+
+
+def etiqueta_rol(rol: str) -> str:
+    return ETIQUETAS_ROL.get((rol or "").strip().lower(), (rol or "").replace("_", " ").title())
 
 
 def _norm(texto: str) -> str:
@@ -32,22 +62,20 @@ def etiqueta_centro(codigo: str, planta: str = "") -> str:
     return codigo or planta or "Centro no configurado"
 
 
-def cargar_todos_usuarios() -> list[dict]:
-    if not RUTA_USUARIOS.exists():
+def _resp_lista(valor) -> list[str]:
+    if not valor:
         return []
-    return json.loads(RUTA_USUARIOS.read_text(encoding="utf-8"))
-
-
-def guardar_usuarios(usuarios: list[dict]) -> None:
-    RUTA_USUARIOS.parent.mkdir(parents=True, exist_ok=True)
-    RUTA_USUARIOS.write_text(
-        json.dumps(usuarios, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def cargar_usuarios() -> list[dict]:
-    return [u for u in cargar_todos_usuarios() if u.get("activo", True)]
+    if isinstance(valor, list):
+        return [str(x).strip() for x in valor if str(x).strip()]
+    if isinstance(valor, str):
+        try:
+            parsed = json.loads(valor)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except Exception:
+            pass
+        return [x.strip() for x in valor.replace(";", ",").split(",") if x.strip()]
+    return []
 
 
 def _normalizar_usuario(usuario: dict) -> dict:
@@ -60,12 +88,78 @@ def _normalizar_usuario(usuario: dict) -> dict:
     u["rol"] = (u.get("rol") or "tecnico").strip().lower()
     u["job_code"] = (u.get("job_code") or "").strip()
     u["rut"] = (u.get("rut") or "").strip()
-    responsabilidades = u.get("responsable_de") or []
-    if isinstance(responsabilidades, str):
-        responsabilidades = [x.strip() for x in responsabilidades.replace(";", ",").split(",") if x.strip()]
-    u["responsable_de"] = responsabilidades
+    u["responsable_de"] = _resp_lista(u.get("responsable_de"))
     u["activo"] = bool(u.get("activo", True))
+    u["es_admin"] = bool(u.get("es_admin", False))
+    # La cuenta maestra histórica nace como administrador en una instalación nueva.
+    if u["correo"] == "rfernandezc@agrosuper.com":
+        u["es_admin"] = True
     return u
+
+
+def _a_dict(reg: UsuarioRootMine) -> dict:
+    return {
+        "rut": reg.rut or "", "nombre": reg.nombre or "", "correo": reg.correo or "",
+        "area": reg.area or "", "job_code": reg.job_code or "", "rol": reg.rol or "tecnico",
+        "centro": reg.centro or "", "planta": reg.planta or "", "activo": bool(reg.activo), "es_admin": bool(reg.es_admin),
+        "responsable_de": _resp_lista(reg.responsable_de),
+    }
+
+
+def inicializar_maestro_usuarios() -> None:
+    """Si la tabla está vacía, importa una sola vez la semilla JSON incluida en el proyecto."""
+    with Session(engine) as session:
+        if session.scalar(select(UsuarioRootMine.id).limit(1)) is not None:
+            return
+        if not RUTA_USUARIOS.exists():
+            return
+        try:
+            semillas = json.loads(RUTA_USUARIOS.read_text(encoding="utf-8"))
+        except Exception:
+            semillas = []
+        vistos = set()
+        for item in semillas:
+            u = _normalizar_usuario(item)
+            if not u["correo"] or u["correo"] in vistos:
+                continue
+            vistos.add(u["correo"])
+            session.add(UsuarioRootMine(
+                rut=u["rut"], nombre=u["nombre"], correo=u["correo"], area=u["area"],
+                job_code=u["job_code"], rol=u["rol"], centro=u["centro"], planta=u["planta"],
+                activo=u["activo"], es_admin=u["es_admin"], responsable_de=json.dumps(u["responsable_de"], ensure_ascii=False),
+            ))
+        session.commit()
+
+
+def cargar_todos_usuarios() -> list[dict]:
+    inicializar_maestro_usuarios()
+    with Session(engine) as session:
+        regs = list(session.scalars(select(UsuarioRootMine).order_by(UsuarioRootMine.nombre.asc())).all())
+        return [_a_dict(r) for r in regs]
+
+
+def guardar_usuarios(usuarios: list[dict]) -> None:
+    """Compatibilidad: reemplaza el maestro persistente por la lista recibida."""
+    normalizados = [_normalizar_usuario(u) for u in usuarios]
+    with Session(engine) as session:
+        existentes = {r.correo: r for r in session.scalars(select(UsuarioRootMine)).all()}
+        correos_nuevos = {u["correo"] for u in normalizados}
+        for correo, reg in existentes.items():
+            if correo not in correos_nuevos:
+                session.delete(reg)
+        for u in normalizados:
+            reg = existentes.get(u["correo"])
+            if reg is None:
+                reg = UsuarioRootMine(correo=u["correo"], nombre=u["nombre"])
+                session.add(reg)
+            reg.rut=u["rut"]; reg.nombre=u["nombre"]; reg.area=u["area"]; reg.job_code=u["job_code"]
+            reg.rol=u["rol"]; reg.centro=u["centro"]; reg.planta=u["planta"]; reg.activo=u["activo"]; reg.es_admin=u["es_admin"]
+            reg.responsable_de=json.dumps(u["responsable_de"], ensure_ascii=False)
+        session.commit()
+
+
+def cargar_usuarios() -> list[dict]:
+    return [u for u in cargar_todos_usuarios() if u.get("activo", True)]
 
 
 def crear_usuario(usuario: dict) -> None:
@@ -74,55 +168,60 @@ def crear_usuario(usuario: dict) -> None:
         raise ValueError("Debes ingresar un correo válido.")
     if not nuevo["nombre"]:
         raise ValueError("Debes ingresar el nombre del usuario.")
-    usuarios = cargar_todos_usuarios()
-    if any((u.get("correo") or "").lower() == nuevo["correo"] for u in usuarios):
-        raise ValueError("Ya existe una cuenta con ese correo.")
-    usuarios.append(nuevo)
-    guardar_usuarios(usuarios)
+    with Session(engine) as session:
+        if session.scalar(select(UsuarioRootMine).where(UsuarioRootMine.correo == nuevo["correo"])):
+            raise ValueError("Ya existe una cuenta con ese correo.")
+        session.add(UsuarioRootMine(
+            rut=nuevo["rut"], nombre=nuevo["nombre"], correo=nuevo["correo"], area=nuevo["area"],
+            job_code=nuevo["job_code"], rol=nuevo["rol"], centro=nuevo["centro"], planta=nuevo["planta"],
+            activo=nuevo["activo"], es_admin=nuevo["es_admin"], responsable_de=json.dumps(nuevo["responsable_de"], ensure_ascii=False),
+        ))
+        session.commit()
 
 
 def actualizar_usuario(correo_original: str, cambios: dict) -> None:
     original = (correo_original or "").strip().lower()
-    usuarios = cargar_todos_usuarios()
-    indice = next((i for i, u in enumerate(usuarios) if (u.get("correo") or "").lower() == original), None)
-    if indice is None:
-        raise ValueError("No se encontró la cuenta a editar.")
-    actualizado = _normalizar_usuario({**usuarios[indice], **cambios})
-    if not actualizado["correo"] or "@" not in actualizado["correo"]:
-        raise ValueError("Debes ingresar un correo válido.")
-    if any(i != indice and (u.get("correo") or "").lower() == actualizado["correo"] for i, u in enumerate(usuarios)):
-        raise ValueError("Ya existe otra cuenta con ese correo.")
-    usuarios[indice] = actualizado
-    guardar_usuarios(usuarios)
+    with Session(engine) as session:
+        reg = session.scalar(select(UsuarioRootMine).where(UsuarioRootMine.correo == original))
+        if not reg:
+            raise ValueError("No se encontró la cuenta a editar.")
+        base = _a_dict(reg)
+        actualizado = _normalizar_usuario({**base, **cambios})
+        if not actualizado["correo"] or "@" not in actualizado["correo"]:
+            raise ValueError("Debes ingresar un correo válido.")
+        duplicado = session.scalar(select(UsuarioRootMine).where(UsuarioRootMine.correo == actualizado["correo"], UsuarioRootMine.id != reg.id))
+        if duplicado:
+            raise ValueError("Ya existe otra cuenta con ese correo.")
+        reg.rut=actualizado["rut"]; reg.nombre=actualizado["nombre"]; reg.correo=actualizado["correo"]
+        reg.area=actualizado["area"]; reg.job_code=actualizado["job_code"]; reg.rol=actualizado["rol"]
+        reg.centro=actualizado["centro"]; reg.planta=actualizado["planta"]; reg.activo=actualizado["activo"]; reg.es_admin=actualizado["es_admin"]
+        reg.responsable_de=json.dumps(actualizado["responsable_de"], ensure_ascii=False)
+        session.commit()
 
 
 def eliminar_usuario(correo: str) -> bool:
     objetivo = (correo or "").strip().lower()
-    usuarios = cargar_todos_usuarios()
-    nuevos = [u for u in usuarios if (u.get("correo") or "").lower() != objetivo]
-    if len(nuevos) == len(usuarios):
-        return False
-    guardar_usuarios(nuevos)
-    return True
+    with Session(engine) as session:
+        reg = session.scalar(select(UsuarioRootMine).where(UsuarioRootMine.correo == objetivo))
+        if not reg:
+            return False
+        session.delete(reg)
+        session.commit()
+        return True
 
 
 def buscar_usuario_por_correo(correo: str) -> dict | None:
     objetivo = (correo or "").strip().lower()
-    coincidencias = [u for u in cargar_usuarios() if u.get("correo", "").lower() == objetivo]
-    if not coincidencias:
+    if not objetivo:
         return None
-    prioridad = {"subgerente": 6, "jefe": 5, "ingeniero": 4, "supervisor": 3, "senior": 2, "tecnico": 1}
-    usuario = max(coincidencias, key=lambda u: prioridad.get(u.get("rol", "").lower(), 0)).copy()
-    usuario.setdefault("centro", "")
-    usuario.setdefault("planta", nombre_centro(usuario.get("centro", "")))
-    usuario.setdefault("responsable_de", [])
-    return usuario
+    inicializar_maestro_usuarios()
+    with Session(engine) as session:
+        reg = session.scalar(select(UsuarioRootMine).where(UsuarioRootMine.correo == objetivo, UsuarioRootMine.activo.is_(True)))
+        return _a_dict(reg) if reg else None
 
 
 def _areas_responsabilidad(usuario: dict) -> set[str]:
-    explicitas = usuario.get("responsable_de") or []
-    if isinstance(explicitas, str):
-        explicitas = [p.strip() for p in explicitas.replace(";", ",").split(",") if p.strip()]
+    explicitas = _resp_lista(usuario.get("responsable_de"))
     if explicitas:
         return {_norm(x) for x in explicitas}
     area = (usuario.get("area") or "").replace("ADM / DESPACHO", "ADM-DESP")
@@ -141,9 +240,7 @@ def _resolver_responsable(centro: str, area: str, rol: str) -> dict | None:
         areas = _areas_responsabilidad(usuario)
         if "TODAS" in areas or area_objetivo in areas:
             candidatos.append(usuario)
-    if not candidatos:
-        return None
-    return sorted(candidatos, key=lambda x: (x.get("nombre", ""), x.get("correo", "")))[0]
+    return sorted(candidatos, key=lambda x: (x.get("nombre", ""), x.get("correo", "")))[0] if candidatos else None
 
 
 def resolver_supervisor(centro: str, area: str) -> dict | None:
@@ -159,7 +256,7 @@ def resumen_maestro() -> dict:
     conteo = {}
     centros = set()
     for u in usuarios:
-        rol = u.get("rol", "sin rol").capitalize()
+        rol = etiqueta_rol(u.get("rol", "sin rol"))
         conteo[rol] = conteo.get(rol, 0) + 1
         if u.get("centro"):
             centros.add(str(u["centro"]))
