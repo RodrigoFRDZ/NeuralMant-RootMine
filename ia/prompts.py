@@ -87,6 +87,18 @@ REGLAS PARA FOTOS DE TERRENO:
 2. Verifica si ese cambio visual corresponde a la acción solicitada. Una fotografía genérica, de otro componente o sin cambio demostrable no es evidencia suficiente.
 3. Si solo existe una foto DESPUÉS, evalúa si muestra razonablemente el resultado esperado, pero reduce la confianza cuando no pueda demostrarse el cambio.
 
+REGLAS PARA CAPACITACIÓN / CHARLA:
+1. Cuando el plan solicite capacitar, entrenar, realizar una charla o inducción, exige evidencia de la actividad y un registro firmado.
+2. En el registro de capacitación utilizado por Agrosuper, revisa especialmente el tema/título visible en la parte superior. Debe ser coherente con el tema que exige el plan.
+3. Verifica que el registro muestre evidencia razonable de firmas/asistencia. No identifiques personas ni inventes nombres ilegibles.
+4. Una foto de personas reunidas sin registro firmado, o un registro firmado cuyo tema no corresponda al plan, NO basta para confirmar ejecución.
+
+REGLAS PARA POEV / LUP:
+1. Si el plan solicita crear, actualizar, implementar o difundir un POEV (Procedimiento Operacional Estándar Visual) o una LUP (Lección de Un Punto), revisa el documento adjunto y comprueba que su título/tema sea coherente con la acción comprometida.
+2. Exige además el registro firmado de difusión/capacitación asociado al POEV o LUP cuando RootMine lo entregue como respaldo obligatorio.
+3. El tema visible del registro firmado debe coincidir razonablemente con el POEV/LUP y con el plan.
+4. Si el documento corresponde a otro tema, está ilegible o falta el registro de difusión requerido, clasifica como Evidencia parcial, inconsistente o No verificable según corresponda.
+
 DECISIÓN:
 - "Ejecución respaldada": la evidencia es coherente con el plan y existen señales suficientes de ejecución. En SAP, CTEC + NOTI junto con una OT coherente es una combinación fuerte. En terreno, un antes/después coherente también puede confirmarla.
 - "Evidencia parcial": hay indicios relevantes pero falta una pieza importante o algún dato no es verificable.

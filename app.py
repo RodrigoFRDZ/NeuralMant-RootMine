@@ -243,8 +243,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.1.9 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.1.9 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.0 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.2.0 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
 
 def mostrar_menu() -> str:
     usuario = st.session_state.usuario_actual or {}
@@ -289,7 +289,7 @@ def mostrar_menu() -> str:
             _limpiar_token_sesion()
             st.rerun()
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.1.9 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.0 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 

@@ -163,6 +163,76 @@ def listar_borradores_para(email: str) -> list[ADF]:
         return list(session.scalars(consulta).all())
 
 
+
+def buscar_borrador_coincidente(
+    email: str,
+    numero_equipo: str = "",
+    equipo: str = "",
+    excluir_id: int | None = None,
+) -> dict | None:
+    """Busca un borrador del mismo usuario y activo antes de iniciar otro ADF."""
+    email = (email or "").strip().lower()
+    numero = (numero_equipo or "").strip().lower()
+    descripcion = " ".join((equipo or "").strip().lower().split())
+    if not email or (not numero and not descripcion):
+        return None
+
+    with Session(engine) as session:
+        consulta = (
+            select(ADF)
+            .where(ADF.creado_por_email == email, ADF.estado == "Borrador")
+            .order_by(ADF.fecha_actualizacion.desc())
+        )
+        for adf in session.scalars(consulta).all():
+            if excluir_id and int(adf.id) == int(excluir_id):
+                continue
+            numero_adf = (adf.numero_equipo or "").strip().lower()
+            desc_adf = " ".join((adf.equipo or "").strip().lower().split())
+            mismo_numero = bool(numero and numero_adf and numero == numero_adf)
+            misma_desc = bool(descripcion and desc_adf and (
+                descripcion == desc_adf or descripcion in desc_adf or desc_adf in descripcion
+            ))
+            if mismo_numero or misma_desc:
+                return {
+                    "id": adf.id,
+                    "equipo": adf.equipo or "Análisis sin título",
+                    "numero_equipo": adf.numero_equipo or "",
+                    "area": adf.area or "",
+                    "etapa": adf.etapa or "Borrador",
+                    "fecha_actualizacion": adf.fecha_actualizacion,
+                }
+    return None
+
+
+def eliminar_borrador_adf(adf_id: int, email: str) -> bool:
+    """Elimina solo un borrador propio; no permite borrar ADF enviados/aprobados."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    with Session(engine) as session:
+        adf = session.get(ADF, int(adf_id))
+        if not adf:
+            return False
+        if (adf.creado_por_email or "").strip().lower() != email:
+            raise PermissionError("Solo el creador puede eliminar este borrador.")
+        if adf.estado != "Borrador":
+            raise ValueError("Solo se pueden eliminar análisis que todavía estén en estado Borrador.")
+
+        validaciones = list(session.scalars(
+            select(ValidacionADF).where(ValidacionADF.adf_id == adf.id)
+        ).all())
+        notificaciones = list(session.scalars(
+            select(NotificacionInterna).where(NotificacionInterna.adf_id == adf.id)
+        ).all())
+        for item in validaciones:
+            session.delete(item)
+        for item in notificaciones:
+            session.delete(item)
+        session.delete(adf)
+        session.commit()
+        return True
+
+
 def cargar_borrador_adf(adf_id: int, email: str) -> dict | None:
     email = (email or "").strip().lower()
     with Session(engine) as session:

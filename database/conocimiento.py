@@ -43,6 +43,9 @@ def buscar_casos_similares(
 
     resultados: list[CasoSimilar] = []
     for adf in listar_adf():
+        # Los borradores se controlan por separado; no deben presentarse como conocimiento histórico.
+        if (getattr(adf, "estado", "") or "") == "Borrador":
+            continue
         texto = " ".join([
             getattr(adf, "centro", "") or "",
             getattr(adf, "planta", "") or "",

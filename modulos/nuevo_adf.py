@@ -6,6 +6,7 @@ from database.conocimiento import buscar_casos_similares, formatear_contexto_cas
 from database.repositorio_adf import (
     guardar_adf, actualizar_adf, guardar_pdf_adf, obtener_adf, registrar_envio_validacion,
     guardar_borrador_adf, cargar_borrador_adf, actualizar_contenido_borrador,
+    buscar_borrador_coincidente,
 )
 from ia.cliente import (mensaje_amigable_ia,
     generar_cadenas_y_planes,
@@ -303,9 +304,69 @@ def paso_relato() -> None:
     })
     if archivo_falla is not None:
         datos["imagen_falla"] = archivo_falla.getvalue()
+
+    usuario_actual = st.session_state.get("usuario_actual") or {}
+    borrador_existente = buscar_borrador_coincidente(
+        usuario_actual.get("correo", ""),
+        numero_equipo=numero_equipo.strip(),
+        equipo=equipo.strip(),
+        excluir_id=datos.get("id_guardado"),
+    )
+    casos = buscar_casos_similares(
+        centro=centro.strip(),
+        numero_equipo=numero_equipo.strip(),
+        equipo=equipo.strip(),
+        relato=relato.strip(),
+    )
+    casos = [c for c in casos if int(c.id) != int(datos.get("id_guardado") or -1)]
+    casos_relevantes = [c for c in casos if c.similitud >= 0.30][:3]
+
+    if borrador_existente:
+        st.warning(
+            f"📝 Ya existe el borrador ADF #{borrador_existente['id']} para "
+            f"{borrador_existente['equipo']} (N° {borrador_existente['numero_equipo'] or 's/i'}). "
+            f"Última etapa: {borrador_existente['etapa']}."
+        )
+        b_cont, b_nuevo = st.columns(2)
+        if b_cont.button(
+            "▶️ Continuar borrador existente",
+            key=f"usar_borrador_{borrador_existente['id']}",
+            use_container_width=True,
+            type="primary",
+        ):
+            if cargar_borrador_para_continuar(int(borrador_existente["id"])):
+                st.rerun()
+            st.error("No fue posible recuperar el borrador.")
+            return
+        continuar_nuevo = b_nuevo.button(
+            "➕ Crear un ADF nuevo de todas formas",
+            key=f"nuevo_a_pesar_borrador_{borrador_existente['id']}",
+            use_container_width=True,
+        )
+        if not continuar_nuevo:
+            return
+
+    if casos_relevantes:
+        st.warning("🔎 RootMine encontró ADF anteriores con características relacionadas a esta falla.")
+        for caso in casos_relevantes:
+            st.write(
+                f"**ADF #{caso.id} · {caso.equipo}** — "
+                f"{caso.efecto or 'Fenómeno no registrado'} · "
+                f"Similitud estimada: {caso.similitud:.0%}"
+            )
+            if caso.conclusion:
+                st.caption(f"Conclusión anterior: {caso.conclusion}")
+        if not st.button(
+            "Continuar con un nuevo análisis →",
+            key="confirmar_casos_similares",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.info("Puedes revisar esos casos en Historial antes de continuar si lo consideras necesario.")
+            return
+
     try:
         with st.spinner("GearBot está analizando el contexto técnico..."):
-            casos = buscar_casos_similares(centro=centro.strip(), numero_equipo=numero_equipo.strip(), equipo=equipo.strip(), relato=relato.strip())
             equipo_redaccion = descripcion_equipo_para_redaccion(equipo.strip())
             diagnostico = generar_diagnostico(
                 area=f"{area} | Centro: {centro.strip()} - {datos.get('planta','')} | Identificador interno del activo: {numero_equipo.strip()} (no usar como nombre del equipo en la redacción)",
@@ -481,19 +542,43 @@ def paso_ishikawa() -> None:
                     if incluir:
                         seleccionadas.append({**causa, "mecanismo": mecanismo.strip()})
 
-                extras = st.text_area(
-                    f"Causas observadas adicionales en {categoria}",
-                    placeholder="Una causa concreta por línea",
-                    key=f"extras_{clave}", height=70,
-                )
-                for linea in extras.splitlines():
-                    if linea.strip():
+                st.markdown("**Agregar causas observadas por el equipo investigador**")
+                cantidad_key = f"cantidad_extra_{clave}"
+                if cantidad_key not in st.session_state:
+                    st.session_state[cantidad_key] = 1
+                cantidad = max(1, int(st.session_state[cantidad_key]))
+
+                for extra_idx in range(cantidad):
+                    causa_extra = st.text_input(
+                        f"Causa adicional {extra_idx + 1}",
+                        key=f"extra_causa_{clave}_{extra_idx}",
+                        placeholder="Ej.: Holgura fuera de estándar en soporte de guía",
+                    )
+                    if causa_extra.strip():
                         seleccionadas.append({
-                            "causa": linea.strip(),
+                            "causa": causa_extra.strip(),
                             "mecanismo": "Causa agregada por el equipo investigador.",
                             "prioridad_revision": "Alta",
                             "preguntas_validacion": [],
                         })
+
+                agregar = st.form_submit_button(
+                    f"＋ Agregar otra causa en {categoria}",
+                    key=f"agregar_extra_{clave}",
+                    use_container_width=True,
+                )
+                quitar = False
+                if cantidad > 1:
+                    quitar = st.form_submit_button(
+                        f"− Quitar última causa en {categoria}",
+                        key=f"quitar_extra_{clave}",
+                        use_container_width=True,
+                    )
+                if agregar:
+                    st.session_state["_ishikawa_ajuste"] = ("agregar", clave)
+                elif quitar:
+                    st.session_state["_ishikawa_ajuste"] = ("quitar", clave)
+
                 resultado[categoria] = seleccionadas
 
         c1, c2 = st.columns(2)
@@ -501,6 +586,19 @@ def paso_ishikawa() -> None:
         continuar = c2.form_submit_button(
             "Seleccionar causas para 5 Porqués →", type="primary", use_container_width=True,
         )
+
+    ajuste = st.session_state.pop("_ishikawa_ajuste", None)
+    if ajuste:
+        accion_ajuste, clave_ajuste = ajuste
+        key_cantidad = f"cantidad_extra_{clave_ajuste}"
+        actual = max(1, int(st.session_state.get(key_cantidad, 1)))
+        if accion_ajuste == "agregar":
+            st.session_state[key_cantidad] = actual + 1
+        elif accion_ajuste == "quitar":
+            ultima = actual - 1
+            st.session_state[key_cantidad] = max(1, ultima)
+            st.session_state.pop(f"extra_causa_{clave_ajuste}_{ultima}", None)
+        st.rerun()
 
     if volver:
         avanzar(2)

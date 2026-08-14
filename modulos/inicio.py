@@ -4,6 +4,7 @@ from collections import Counter
 import streamlit as st
 
 from database.rendimiento import borradores_livianos, correcciones_livianas, contar_pendientes, recientes_livianos
+from database.repositorio_adf import eliminar_borrador_adf
 from database.metricas_sistema import mb
 from modulos.cache_lecturas import dashboard_cache, uso_ia_cache, almacenamiento_cache
 from ia.cliente import limites_configurados, obtener_configuracion
@@ -104,11 +105,28 @@ def mostrar_inicio() -> None:
                     st.caption(f"{adf.centro or 's/centro'} · {adf.area or 's/área'} · {adf.etapa}")
                     st.write(f"Última actualización: **{adf.fecha_actualizacion:%d/%m/%Y %H:%M}**")
                 with caccion:
-                    if st.button("▶️ Continuar análisis", key=f"continuar_borrador_{adf.id}", type="primary", use_container_width=True):
-                        if cargar_borrador_para_continuar(adf.id):
+                    if st.session_state.get("confirmar_eliminar_borrador") == adf.id:
+                        st.warning("¿Eliminar este borrador definitivamente?")
+                        if st.button("Sí, eliminar", key=f"confirm_del_borrador_{adf.id}", use_container_width=True):
+                            try:
+                                if eliminar_borrador_adf(adf.id, usuario_actual.get("correo", "")):
+                                    st.session_state.pop("confirmar_eliminar_borrador", None)
+                                    st.success("Borrador eliminado.")
+                                    st.rerun()
+                            except Exception as exc:
+                                st.error(str(exc))
+                        if st.button("Cancelar", key=f"cancel_del_borrador_{adf.id}", use_container_width=True):
+                            st.session_state.pop("confirmar_eliminar_borrador", None)
                             st.rerun()
-                        else:
-                            st.error("No fue posible abrir este borrador.")
+                    else:
+                        if st.button("▶️ Continuar análisis", key=f"continuar_borrador_{adf.id}", type="primary", use_container_width=True):
+                            if cargar_borrador_para_continuar(adf.id):
+                                st.rerun()
+                            else:
+                                st.error("No fue posible abrir este borrador.")
+                        if st.button("🗑️ Eliminar borrador", key=f"del_borrador_{adf.id}", use_container_width=True):
+                            st.session_state["confirmar_eliminar_borrador"] = adf.id
+                            st.rerun()
 
     # Bandeja del creador: llegan rechazos del Supervisor o devoluciones derivadas por el Supervisor tras una observación de Jefatura.
     correcciones = correcciones_livianas(usuario_actual.get("correo", ""), limite=12)

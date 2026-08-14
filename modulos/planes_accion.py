@@ -61,6 +61,53 @@ def _respaldos_guardados(accion: dict) -> list[dict]:
     return []
 
 
+
+MAX_RESPALDO_BYTES = 10 * 1024 * 1024
+
+
+def _texto_plan(accion: dict) -> str:
+    return " ".join([
+        str(accion.get("accion") or ""),
+        str(accion.get("objetivo") or ""),
+        str(accion.get("relacion_con_causa") or ""),
+        str(accion.get("evidencia_de_implementacion") or ""),
+    ]).lower()
+
+
+def _requisitos_especiales(accion: dict) -> list[tuple[str, str]]:
+    """Devuelve (tipo_interno, descripción) de respaldos obligatorios por tipo de plan."""
+    texto = _texto_plan(accion)
+    req: list[tuple[str, str]] = []
+
+    es_capacitacion = any(x in texto for x in [
+        "capacita", "charla", "entrenamiento", "inducción", "induccion", "formación", "formacion"
+    ])
+    es_poev = "poev" in texto or "procedimiento operacional estándar visual" in texto or "procedimiento operacional estandar visual" in texto
+    es_lup = "lup" in texto or "lección de un punto" in texto or "leccion de un punto" in texto
+
+    if es_capacitacion:
+        req.extend([
+            ("Foto capacitación / charla", "Foto que evidencie la realización de la capacitación o charla."),
+            ("Registro firmado capacitación", "Registro firmado de asistencia/capacitación. El tema visible en la parte superior debe coincidir con el plan."),
+        ])
+    if es_poev:
+        req.extend([
+            ("Documento POEV", "POEV implementado, con título/tema coherente con el plan."),
+            ("Registro firmado difusión POEV", "Registro firmado que evidencie la difusión/capacitación del POEV."),
+        ])
+    if es_lup:
+        req.extend([
+            ("Documento LUP", "LUP implementada, con título/tema coherente con el plan."),
+            ("Registro firmado difusión LUP", "Registro firmado que evidencie la difusión/capacitación de la LUP."),
+        ])
+    return req
+
+
+def _faltantes_requisitos(accion: dict, respaldos: list[dict]) -> list[str]:
+    presentes = {str(r.get("tipo") or "") for r in respaldos}
+    return [descripcion for tipo, descripcion in _requisitos_especiales(accion) if tipo not in presentes]
+
+
 def _agregar_archivos(destino: list[dict], archivos, tipo: str):
     if not archivos:
         return
@@ -69,10 +116,13 @@ def _agregar_archivos(destino: list[dict], archivos, tipo: str):
     existentes = {(r.get("tipo"), r.get("nombre"), len(r.get("b64", ""))) for r in destino}
     for archivo in archivos:
         data = archivo.getvalue()
+        if len(data) > MAX_RESPALDO_BYTES:
+            st.error(f"{archivo.name}: el respaldo supera 10 MB. Reduce el tamaño antes de cargarlo.")
+            continue
         item = {
             "tipo": tipo,
             "nombre": archivo.name,
-            "mime": archivo.type or "image/png",
+            "mime": archivo.type or "application/octet-stream",
             "b64": base64.b64encode(data).decode("ascii"),
         }
         clave = (tipo, archivo.name, len(item["b64"]))
@@ -202,7 +252,27 @@ def mostrar_planes_accion() -> None:
                     p1, p2 = st.columns(2)
                     foto_antes = p1.file_uploader("📷 Foto ANTES", type=["png", "jpg", "jpeg"], key=f"pa_antes_{adf.id}_{i}")
                     foto_despues = p2.file_uploader("📷 Foto DESPUÉS", type=["png", "jpg", "jpeg"], key=f"pa_despues_{adf.id}_{i}")
-                    otros = st.file_uploader("📎 Otros respaldos visuales", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key=f"pa_otros_{adf.id}_{i}")
+                    otros = st.file_uploader("📎 Otros respaldos visuales", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True, key=f"pa_otros_{adf.id}_{i}")
+
+                    requisitos = _requisitos_especiales(accion)
+                    archivos_especiales = []
+                    if requisitos:
+                        st.markdown("##### 📋 Respaldos obligatorios para este tipo de plan")
+                        st.info(
+                            "RootMine detectó que esta acción corresponde a capacitación/charla, POEV y/o LUP. "
+                            "La ejecución no podrá ser verificada por IA mientras falte un respaldo obligatorio."
+                        )
+                        for tipo_req, descripcion_req in requisitos:
+                            permite_foto = tipo_req == "Foto capacitación / charla"
+                            archivo_req = st.file_uploader(
+                                f"{tipo_req} *",
+                                type=["png", "jpg", "jpeg"] if permite_foto else ["png", "jpg", "jpeg", "pdf"],
+                                key=f"pa_req_{adf.id}_{i}_{tipo_req}",
+                                help=descripcion_req,
+                            )
+                            st.caption(descripcion_req)
+                            archivos_especiales.append((tipo_req, archivo_req))
+
                     observacion = st.text_area(
                         "Contexto adicional (opcional)",
                         value=accion.get("evidencia_de_implementacion", ""),
@@ -216,6 +286,12 @@ def mostrar_planes_accion() -> None:
                     _agregar_archivos(nuevos, foto_antes, "Foto ANTES")
                     _agregar_archivos(nuevos, foto_despues, "Foto DESPUÉS")
                     _agregar_archivos(nuevos, otros, "Otro respaldo")
+                    for tipo_req, archivo_req in archivos_especiales:
+                        _agregar_archivos(nuevos, archivo_req, tipo_req)
+
+                    faltantes_especiales = _faltantes_requisitos(accion, nuevos)
+                    if faltantes_especiales:
+                        st.warning("Faltan respaldos obligatorios: " + " | ".join(faltantes_especiales))
 
                     if respaldos:
                         st.markdown("**Respaldos guardados**")
@@ -223,11 +299,28 @@ def mostrar_planes_accion() -> None:
                         for j, r in enumerate(respaldos):
                             data = _decode_respaldo(r)
                             if data:
-                                cols[j % len(cols)].image(data, caption=f"{r.get('tipo','')} · {r.get('nombre','')}", use_container_width=True)
+                                mime = str(r.get("mime") or "")
+                                if mime.startswith("image/"):
+                                    cols[j % len(cols)].image(data, caption=f"{r.get('tipo','')} · {r.get('nombre','')}", use_container_width=True)
+                                else:
+                                    cols[j % len(cols)].write(f"📄 **{r.get('tipo','Respaldo')}**")
+                                    cols[j % len(cols)].caption(r.get("nombre", "Documento"))
+                                    cols[j % len(cols)].download_button(
+                                        "Ver / descargar",
+                                        data=data,
+                                        file_name=r.get("nombre", "respaldo.pdf"),
+                                        mime=mime or "application/octet-stream",
+                                        key=f"pa_saved_{adf.id}_{i}_{j}",
+                                    )
 
                     if st.button("🤖 Analizar respaldos y verificar ejecución", key=f"pa_ia_{adf.id}_{i}", type="primary", use_container_width=True):
                         if not nuevos:
-                            st.error("Adjunta al menos una captura de SAP o una evidencia fotográfica antes de analizar.")
+                            st.error("Adjunta al menos un respaldo antes de analizar.")
+                        elif faltantes_especiales:
+                            st.error(
+                                "No es posible verificar todavía esta acción. Faltan respaldos obligatorios: "
+                                + " | ".join(faltantes_especiales)
+                            )
                         else:
                             accion.update({
                                 "responsable_sugerido": responsable.strip(),
@@ -246,7 +339,11 @@ Relación con la causa: {accion.get('relacion_con_causa','')}
 Fecha compromiso: {accion.get('fecha_compromiso') or 'No definida'}
 Contexto adicional del ejecutor: {observacion or 'Sin contexto adicional'}
 
-Analiza directamente todos los respaldos adjuntos. Para capturas SAP verifica encabezado/texto breve, Status de usuario (CTEC + NOTI como señal fuerte), Fecha fin extrema y coherencia de la OT con el plan. Para fotos compara ANTES/DESPUÉS cuando existan."""
+Analiza directamente todos los respaldos adjuntos.
+Para capturas SAP verifica encabezado/texto breve, Status de usuario (CTEC + NOTI como señal fuerte), Fecha fin extrema y coherencia de la OT con el plan.
+Para fotos compara ANTES/DESPUÉS cuando existan.
+Si el plan corresponde a capacitación/charla, valida que exista evidencia visual de la actividad y un registro firmado; en el registro, el tema/título visible en la parte superior debe ser coherente con el contenido del plan.
+Si corresponde a POEV o LUP, valida que el documento presentado corresponda realmente al POEV/LUP comprometido y que el registro firmado de difusión/capacitación sea coherente con ese tema."""
                             try:
                                 with st.spinner("GearBot está leyendo la OT y/o comparando la evidencia fotográfica..."):
                                     rev = revisar_evidencia_plan(contexto, imagenes=_partes_ia(nuevos))
