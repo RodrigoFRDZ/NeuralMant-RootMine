@@ -152,6 +152,100 @@ def actualizar_contenido_borrador(adf_id: int, datos: dict) -> int:
         return adf.id
 
 
+
+def listar_borradores_globales(centro: str = "") -> list[ADF]:
+    """Lista borradores para administración. Puede filtrar por centro."""
+    centro = str(centro or "").strip()
+    with Session(engine) as session:
+        consulta = select(ADF).where(ADF.estado == "Borrador")
+        if centro:
+            consulta = consulta.where(ADF.centro == centro)
+        consulta = consulta.order_by(ADF.fecha_actualizacion.desc())
+        return list(session.scalars(consulta).all())
+
+
+def reasignar_borrador_adf(
+    adf_id: int,
+    administrador: dict,
+    nuevo_usuario: dict,
+    motivo: str = "",
+) -> ADF | None:
+    """Reasigna un borrador a otro usuario y registra la transferencia.
+
+    Solo debe invocarse desde una cuenta administradora.
+    """
+    if not bool((administrador or {}).get("es_admin", False)):
+        raise PermissionError("Solo un administrador RootMine puede reasignar borradores.")
+
+    admin_email = (administrador.get("correo") or "").strip().lower()
+    admin_nombre = (administrador.get("nombre") or "Administrador RootMine").strip()
+
+    nuevo_email = (nuevo_usuario.get("correo") or "").strip().lower()
+    nuevo_nombre = (nuevo_usuario.get("nombre") or "").strip()
+    nuevo_activo = bool(nuevo_usuario.get("activo", True))
+
+    if not nuevo_email or not nuevo_nombre:
+        raise ValueError("Selecciona un usuario válido para recibir el borrador.")
+    if not nuevo_activo:
+        raise ValueError("El usuario de destino debe estar activo.")
+
+    with Session(engine) as session:
+        adf = session.get(ADF, int(adf_id))
+        if not adf:
+            return None
+        if adf.estado != "Borrador":
+            raise ValueError("Solo pueden reasignarse ADF que estén en estado Borrador.")
+
+        anterior_nombre = adf.creado_por or "Usuario no registrado"
+        anterior_email = (adf.creado_por_email or "").strip().lower()
+
+        if anterior_email == nuevo_email:
+            raise ValueError("El borrador ya está asignado a ese usuario.")
+
+        adf.creado_por = nuevo_nombre
+        adf.creado_por_email = nuevo_email
+        adf.fecha_actualizacion = datetime.now()
+
+        # Conserva toda la información y etapa; solo cambia el responsable.
+        session.add(ValidacionADF(
+            adf_id=adf.id,
+            etapa="Borrador",
+            accion="Reasignado",
+            usuario_nombre=admin_nombre,
+            usuario_email=admin_email,
+            comentario=(
+                f"Borrador reasignado de {anterior_nombre} ({anterior_email or 's/correo'}) "
+                f"a {nuevo_nombre} ({nuevo_email})."
+                + (f" Motivo: {motivo.strip()}" if motivo.strip() else "")
+            ),
+        ))
+
+        session.commit()
+        session.refresh(adf)
+
+        crear_notificacion(
+            nuevo_email,
+            f"ADF #{adf.id} reasignado a tu cuenta",
+            (
+                f"{adf.area or 'Sin área'} · {adf.equipo or 'Sin equipo'} · "
+                f"puedes continuar el borrador desde {adf.etapa or 'la etapa guardada'}."
+            ),
+            adf_id=adf.id,
+            tipo="borrador_reasignado",
+        )
+
+        if anterior_email:
+            crear_notificacion(
+                anterior_email,
+                f"ADF #{adf.id} reasignado",
+                f"El borrador fue reasignado por {admin_nombre} a {nuevo_nombre}.",
+                adf_id=adf.id,
+                tipo="borrador_reasignado",
+            )
+
+        return adf
+
+
 def listar_borradores_para(email: str) -> list[ADF]:
     email = (email or "").strip().lower()
     if not email:

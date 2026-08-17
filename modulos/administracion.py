@@ -1,7 +1,7 @@
 import streamlit as st
 
 from database.llaves_acceso import eliminar_llave, tiene_llave
-from database.repositorio_adf import listar_adf, eliminar_adf_completo
+from database.repositorio_adf import listar_adf, eliminar_adf_completo, listar_borradores_globales, reasignar_borrador_adf
 from database.usuarios import (
     actualizar_usuario,
     cargar_centros,
@@ -9,6 +9,7 @@ from database.usuarios import (
     crear_usuario,
     eliminar_usuario,
     nombre_centro,
+    ROLES_TECNICOS,
 )
 
 ROLES = ["tecnico", "senior", "programador_mantenimiento", "ingeniero_confiabilidad", "ingeniero_procesos", "supervisor", "jefe", "subgerente"]
@@ -61,7 +62,7 @@ def mostrar_administracion() -> None:
     c2.metric("Activas", activos)
     c3.metric("Validadores activos", validadores)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves", "🗑️ Administrar ADF"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves", "🗑️ Administrar ADF", "🔄 Reasignar borradores"])
 
     with tab1:
         st.subheader("Nueva cuenta")
@@ -313,3 +314,117 @@ def mostrar_administracion() -> None:
                         st.rerun()
                     else:
                         st.error(resultado.get("mensaje", "No fue posible eliminar el ADF."))
+
+    with tab5:
+        st.subheader("Reasignar borradores")
+        st.info(
+            "Los borradores solo pueden ser continuados por su responsable actual. "
+            "Como administrador puedes transferirlos a otro usuario habilitado. "
+            "La reasignación queda registrada en la trazabilidad del ADF."
+        )
+
+        borradores = listar_borradores_globales()
+        if not borradores:
+            st.success("No hay borradores pendientes de reasignación.")
+        else:
+            opciones_borrador = {
+                (
+                    f"ADF #{adf.id} · {adf.equipo or 'Sin equipo'} · "
+                    f"{adf.area or 's/área'} · Responsable: {adf.creado_por or 'No registrado'}"
+                ): adf
+                for adf in borradores
+            }
+            etiqueta_b = st.selectbox(
+                "Selecciona el borrador",
+                list(opciones_borrador.keys()),
+                key="adm_reasignar_borrador_sel",
+            )
+            borrador = opciones_borrador[etiqueta_b]
+
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("ADF", f"#{borrador.id}")
+            r2.metric("Etapa", borrador.borrador_paso or 1)
+            r3.metric("Centro", borrador.centro or "—")
+            r4.metric("Área", borrador.area or "—")
+
+            st.markdown(f"**Equipo:** {borrador.equipo or 'No registrado'}")
+            st.markdown(
+                f"**Responsable actual:** {borrador.creado_por or 'No registrado'} "
+                f"· {borrador.creado_por_email or 's/correo'}"
+            )
+            st.caption(
+                f"Última actualización: "
+                f"{borrador.fecha_actualizacion:%d/%m/%Y %H:%M}"
+                if borrador.fecha_actualizacion else "Sin fecha registrada"
+            )
+
+            # Perfiles que pueden generar/continuar ADF, más el propio Ingeniero/Admin.
+            candidatos = [
+                u for u in usuarios
+                if u.get("activo", True)
+                and (
+                    (u.get("rol") or "").lower() in ROLES_TECNICOS
+                    or (u.get("rol") or "").lower() == "ingeniero"
+                )
+                and (u.get("correo") or "").strip().lower()
+                    != (borrador.creado_por_email or "").strip().lower()
+            ]
+            candidatos.sort(key=lambda u: ((u.get("nombre") or ""), (u.get("correo") or "")))
+
+            if not candidatos:
+                st.warning("No existen otros usuarios activos habilitados para recibir este borrador.")
+            else:
+                opciones_destino = {
+                    (
+                        f"{u.get('nombre','Sin nombre')} · "
+                        f"{ETIQUETA_ROL.get(u.get('rol',''), u.get('rol','').replace('_',' ').title())} · "
+                        f"{u.get('correo','')}"
+                    ): u
+                    for u in candidatos
+                }
+                etiqueta_destino = st.selectbox(
+                    "Nuevo responsable",
+                    list(opciones_destino.keys()),
+                    key=f"adm_reasignar_destino_{borrador.id}",
+                )
+                destino = opciones_destino[etiqueta_destino]
+
+                motivo = st.text_area(
+                    "Motivo / comentario de reasignación",
+                    placeholder="Ej.: técnico de turno no disponible; el ADF continuará con el siguiente responsable.",
+                    key=f"adm_reasignar_motivo_{borrador.id}",
+                )
+
+                confirmar = st.checkbox(
+                    f"Confirmo reasignar el ADF #{borrador.id} a {destino.get('nombre','')}",
+                    key=f"adm_reasignar_confirm_{borrador.id}",
+                )
+
+                if st.button(
+                    "🔄 Reasignar borrador",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not confirmar,
+                    key=f"adm_reasignar_btn_{borrador.id}",
+                ):
+                    try:
+                        actualizado = reasignar_borrador_adf(
+                            borrador.id,
+                            usuario_actual,
+                            destino,
+                            motivo,
+                        )
+                        if actualizado:
+                            st.success(
+                                f"ADF #{actualizado.id} reasignado correctamente a {destino.get('nombre')}."
+                            )
+                            st.caption(
+                                "El nuevo responsable lo verá en 'ADF en progreso' y podrá continuar "
+                                "desde la última etapa guardada."
+                            )
+                            st.rerun()
+                        else:
+                            st.error("No fue posible encontrar el borrador.")
+                    except Exception as exc:
+                        st.error(str(exc))
+

@@ -94,26 +94,53 @@ def barra_inicio(pagina: str) -> None:
     st.markdown('<div class="rootmine-top-divider"></div>', unsafe_allow_html=True)
 
 def _token_sesion_actual() -> str:
-    token_estado = str(st.session_state.get("token_sesion") or "").strip()
-    if token_estado:
-        return token_estado
-    try:
-        return str(st.query_params.get("rm_session", "") or "").strip()
-    except Exception:
-        return ""
+    # La sesión nunca se obtiene desde la URL. Así, compartir el enlace
+    # no comparte credenciales ni un token de autenticación.
+    return str(st.session_state.get("token_sesion") or "").strip()
 
 
 def _guardar_token_sesion(token: str) -> None:
+    # El token se mantiene solo en el estado de sesión de Streamlit.
     st.session_state.token_sesion = token
-    st.query_params["rm_session"] = token
+    try:
+        # Limpia cualquier parámetro legado de versiones anteriores.
+        if "rm_session" in st.query_params:
+            del st.query_params["rm_session"]
+    except Exception:
+        pass
 
 
 def _limpiar_token_sesion() -> None:
     st.session_state.token_sesion = ""
     try:
-        st.query_params.clear()
+        # No borramos otros query params funcionales; solo el parámetro de sesión legado.
+        if "rm_session" in st.query_params:
+            del st.query_params["rm_session"]
     except Exception:
         pass
+
+
+
+def cerrar_sesion_rootmine() -> None:
+    """Cierra inmediatamente la sesión actual y limpia el estado sensible."""
+    token = _token_sesion_actual()
+    if token:
+        try:
+            cerrar_sesion(token)
+        except Exception:
+            # Aunque Supabase no responda, la sesión local debe cerrarse.
+            pass
+
+    claves_sesion = [
+        "usuario", "usuario_actual", "login_pendiente", "nuevo_adf",
+        "token_sesion", "ultimo_toque_sesion", "pagina",
+        "confirmar_eliminar_borrador",
+    ]
+    for clave in claves_sesion:
+        st.session_state.pop(clave, None)
+
+    _limpiar_token_sesion()
+    st.session_state.pagina = "🏠 Dashboard"
 
 
 def restaurar_sesion_persistente() -> None:
@@ -243,8 +270,9 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.0 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.2.0 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.2.2 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
     usuario = st.session_state.usuario_actual or {}
@@ -277,19 +305,12 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        if st.button("Cerrar sesión", use_container_width=True):
-            token = _token_sesion_actual()
-            if token:
-                cerrar_sesion(token)
-            st.session_state.usuario = ""
-            st.session_state.usuario_actual = None
-            st.session_state.pagina = "🏠 Dashboard"
-            st.session_state.login_pendiente = None
-            st.session_state.pop("nuevo_adf", None)
-            _limpiar_token_sesion()
+        st.markdown("##### Seguridad")
+        if st.button("🚪 Cerrar sesión", use_container_width=True, type="secondary"):
+            cerrar_sesion_rootmine()
             st.rerun()
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.0 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.2 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
