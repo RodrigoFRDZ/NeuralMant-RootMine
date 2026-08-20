@@ -146,6 +146,15 @@ def cargar_borrador_para_continuar(adf_id: int) -> bool:
     }
     base.update(recuperado)
     base["id_guardado"] = adf_id
+    base["id_edicion"] = None
+
+    # Un ADF que sigue siendo Borrador no debe quedar atrapado en el Resumen final.
+    # Si fue guardado en paso 9 sin enviarse a validación, se retoma en PDF / envío
+    # para continuar el MISMO ADF y conservar su ID.
+    if (base.get("estado_validacion") or "Borrador") == "Borrador" and int(base.get("paso") or 1) >= 9:
+        base["paso"] = 8
+        base["_retomado_desde_resumen"] = True
+
     st.session_state.nuevo_adf = base
     st.session_state.pagina = "📝 RootMine · Nuevo ADF"
     return True
@@ -1007,7 +1016,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.1.5 · análisis completado",
+        "RootMine v4.2.3 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1023,16 +1032,37 @@ def paso_final() -> None:
     st.info(
         "Las causas y la causa raíz deben considerarse preliminares hasta que la evidencia de terreno sea revisada y aprobada."
     )
-    if st.button("Crear otro ADF", type="primary", use_container_width=True):
-        st.session_state.pop("nuevo_adf", None)
-        st.rerun()
+    if adf and adf.estado == "Borrador":
+        st.warning(
+            "Este ADF todavía está en borrador y no ha completado el envío a validación."
+        )
+        if st.button("← Volver a PDF / envío", type="primary", use_container_width=True):
+            datos["paso"] = 8
+            _guardar_avance(8)
+            st.rerun()
+    else:
+        if st.button("Crear otro ADF", type="primary", use_container_width=True):
+            st.session_state.pop("nuevo_adf", None)
+            st.rerun()
 
 
 def mostrar_nuevo_adf() -> None:
     inicializar()
-    paso = st.session_state.nuevo_adf["paso"]
+    datos_actuales = st.session_state.nuevo_adf
+    paso = datos_actuales["paso"]
+
+    if datos_actuales.get("id_guardado") and datos_actuales.get("estado_validacion") == "Borrador":
+        st.info(
+            f"📝 Continuando el ADF #{datos_actuales['id_guardado']} desde la etapa guardada. "
+            "Los cambios se guardarán en este mismo ADF; no se creará uno nuevo."
+        )
+        if datos_actuales.pop("_retomado_desde_resumen", False):
+            st.caption(
+                "El borrador estaba en Resumen final sin haber sido enviado. "
+                "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
+            )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.1.5 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.2.3 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
