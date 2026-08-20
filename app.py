@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 import streamlit as st
+import extra_streamlit_components as stx
 
 from database.conexion import crear_tablas, descripcion_backend, usando_nube
 from database.usuarios import buscar_usuario_por_correo, resumen_maestro, etiqueta_rol, inicializar_maestro_usuarios
@@ -14,7 +15,7 @@ from modulos.base_conocimiento import mostrar_base_conocimiento
 from modulos.indicadores import mostrar_indicadores
 from modulos.planes_accion import mostrar_planes_accion
 from modulos.inicio import mostrar_inicio
-from modulos.nuevo_adf import mostrar_nuevo_adf
+from modulos.nuevo_adf import mostrar_nuevo_adf, cargar_borrador_para_continuar
 from modulos.validaciones import mostrar_validaciones
 from modulos.notificaciones import mostrar_campana
 from modulos.administracion import mostrar_administracion
@@ -25,6 +26,57 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+COOKIE_SESION = "rootmine_session"
+COOKIE_PAGINA = "rootmine_page"
+COOKIE_BORRADOR = "rootmine_draft"
+_COOKIE_MANAGER = None
+
+
+def _cookie_manager():
+    """Una sola instancia por ejecución para leer/escribir cookies del navegador."""
+    global _COOKIE_MANAGER
+    if _COOKIE_MANAGER is None:
+        _COOKIE_MANAGER = stx.CookieManager(key="rootmine_cookie_manager")
+    return _COOKIE_MANAGER
+
+
+def _leer_cookie(nombre: str) -> str:
+    try:
+        return str(_cookie_manager().get(nombre) or "").strip()
+    except Exception:
+        return ""
+
+
+def _guardar_cookie(nombre: str, valor: str, *, max_age: int = 43200) -> None:
+    """Guarda solo si cambió, evitando reruns innecesarios del componente."""
+    valor = str(valor or "")
+    try:
+        manager = _cookie_manager()
+        actual = str(manager.get(nombre) or "")
+        if actual == valor:
+            return
+        manager.set(
+            nombre,
+            valor,
+            key=f"set_{nombre}_{abs(hash(valor)) % 10_000_000}",
+            path="/",
+            max_age=max_age,
+            secure=True,
+            same_site="strict",
+        )
+    except Exception:
+        pass
+
+
+def _borrar_cookie(nombre: str) -> None:
+    try:
+        manager = _cookie_manager()
+        if manager.get(nombre) is not None:
+            manager.delete(nombre, key=f"delete_{nombre}")
+    except Exception:
+        pass
 
 
 
@@ -94,16 +146,23 @@ def barra_inicio(pagina: str) -> None:
     st.markdown('<div class="rootmine-top-divider"></div>', unsafe_allow_html=True)
 
 def _token_sesion_actual() -> str:
-    # La sesión nunca se obtiene desde la URL. Así, compartir el enlace
-    # no comparte credenciales ni un token de autenticación.
-    return str(st.session_state.get("token_sesion") or "").strip()
+    """Obtiene el token local o el token persistente del navegador.
+
+    El token nunca se coloca en la URL.
+    """
+    token_estado = str(st.session_state.get("token_sesion") or "").strip()
+    if token_estado:
+        return token_estado
+    return _leer_cookie(COOKIE_SESION)
 
 
 def _guardar_token_sesion(token: str) -> None:
-    # El token se mantiene solo en el estado de sesión de Streamlit.
+    token = str(token or "").strip()
     st.session_state.token_sesion = token
+    if token:
+        _guardar_cookie(COOKIE_SESION, token)
     try:
-        # Limpia cualquier parámetro legado de versiones anteriores.
+        # Limpia el parámetro legado de versiones antiguas, si alguien abre un link viejo.
         if "rm_session" in st.query_params:
             del st.query_params["rm_session"]
     except Exception:
@@ -112,24 +171,53 @@ def _guardar_token_sesion(token: str) -> None:
 
 def _limpiar_token_sesion() -> None:
     st.session_state.token_sesion = ""
+    _borrar_cookie(COOKIE_SESION)
+    _borrar_cookie(COOKIE_PAGINA)
+    _borrar_cookie(COOKIE_BORRADOR)
     try:
-        # No borramos otros query params funcionales; solo el parámetro de sesión legado.
         if "rm_session" in st.query_params:
             del st.query_params["rm_session"]
     except Exception:
         pass
 
 
+def _persistir_contexto_navegacion(pagina: str) -> None:
+    """Conserva página y borrador para restaurarlos después de F5."""
+    _guardar_cookie(COOKIE_PAGINA, pagina or "🏠 Dashboard")
+    datos = st.session_state.get("nuevo_adf") or {}
+    if pagina == "📝 RootMine · Nuevo ADF" and datos.get("id_guardado") and datos.get("estado_validacion") == "Borrador":
+        _guardar_cookie(COOKIE_BORRADOR, str(datos["id_guardado"]))
+    elif pagina != "📝 RootMine · Nuevo ADF":
+        _borrar_cookie(COOKIE_BORRADOR)
+
+
+def restaurar_contexto_navegacion() -> None:
+    """Después de validar la sesión, recupera página y el mismo ADF borrador."""
+    if not st.session_state.get("usuario_actual"):
+        return
+
+    pagina_cookie = _leer_cookie(COOKIE_PAGINA)
+    if pagina_cookie:
+        st.session_state.pagina = pagina_cookie
+
+    if st.session_state.pagina == "📝 RootMine · Nuevo ADF" and not st.session_state.get("nuevo_adf"):
+        borrador_cookie = _leer_cookie(COOKIE_BORRADOR)
+        if borrador_cookie.isdigit():
+            if not cargar_borrador_para_continuar(int(borrador_cookie)):
+                _borrar_cookie(COOKIE_BORRADOR)
+
 
 def cerrar_sesion_rootmine() -> None:
-    """Cierra inmediatamente la sesión actual y limpia el estado sensible."""
+    """Cierra en Supabase, limpia cookies del navegador y estado sensible."""
     token = _token_sesion_actual()
     if token:
         try:
             cerrar_sesion(token)
         except Exception:
-            # Aunque Supabase no responda, la sesión local debe cerrarse.
+            # Aunque Supabase no responda, la sesión del navegador se elimina.
             pass
+
+    _limpiar_token_sesion()
 
     claves_sesion = [
         "usuario", "usuario_actual", "login_pendiente", "nuevo_adf",
@@ -139,7 +227,6 @@ def cerrar_sesion_rootmine() -> None:
     for clave in claves_sesion:
         st.session_state.pop(clave, None)
 
-    _limpiar_token_sesion()
     st.session_state.pagina = "🏠 Dashboard"
 
 
@@ -270,8 +357,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.3 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.2.3 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.4 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.2.4 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -284,6 +371,11 @@ def mostrar_menu() -> str:
         st.caption(f"{etiqueta_rol(usuario.get('rol',''))} · {usuario.get('area','')}")
         if usuario.get("centro"):
             st.caption(f"Centro {usuario.get('centro')} · {usuario.get('planta','')}")
+
+        if st.button("🚪 Cerrar sesión", key="logout_top", use_container_width=True, type="primary"):
+            cerrar_sesion_rootmine()
+            st.rerun()
+
         mostrar_campana(usuario)
 
         opciones = ["🏠 Dashboard", "📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
@@ -305,12 +397,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown("##### Seguridad")
-        if st.button("🚪 Cerrar sesión", use_container_width=True, type="secondary"):
-            cerrar_sesion_rootmine()
-            st.rerun()
-
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.3 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.4 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -322,7 +409,10 @@ def main() -> None:
     if not st.session_state.usuario_actual:
         mostrar_identificacion()
         return
+
+    restaurar_contexto_navegacion()
     pagina = mostrar_menu()
+    _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
     if pagina == "🏠 Dashboard": mostrar_inicio()
     elif pagina == "📝 RootMine · Nuevo ADF": mostrar_nuevo_adf()

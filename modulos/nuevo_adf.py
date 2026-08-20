@@ -977,11 +977,12 @@ def paso_pdf() -> None:
     st.success(f"ADF #{datos['id_guardado']} guardado correctamente.")
     nombre = f"ADF_{datos['equipo'].replace(' ', '_')}_{datos['id_guardado']}.pdf"
     st.download_button(
-        "Descargar PDF preliminar",
+        "📄 Revisar / descargar PDF",
         data=datos["pdf_bytes"],
         file_name=nombre,
         mime="application/pdf",
         use_container_width=True,
+        type="primary",
     )
 
     supervisor = resolver_supervisor(datos["centro"], datos["area"])
@@ -998,25 +999,44 @@ def paso_pdf() -> None:
             st.warning("⚠️ Esta área no tiene Jefe configurado. El Ingeniero podrá actuar como reemplazo en la etapa final.")
 
         if adf and adf.estado == "Borrador":
-            if st.button("📨 Enviar a validación", type="primary", use_container_width=True):
-                registrar_envio_validacion(adf.id, supervisor, jefe)
-                datos["estado_validacion"] = "Pendiente Supervisor"
-                if supervisor:
-                    st.success("ADF enviado a validación. El Supervisor recibió una notificación dentro de RootMine.")
-                else:
-                    st.success("ADF enviado a validación. Quedó disponible en la bandeja transversal del Ingeniero.")
-                st.rerun()
+            st.caption(
+                "Mientras el ADF siga en Borrador puedes volver a editar cualquier etapa. "
+                "La edición se bloquea recién cuando lo envías a validación."
+            )
+            volver_col, enviar_col = st.columns(2)
+            with volver_col:
+                if st.button(
+                    "← Volver y editar",
+                    key=f"volver_editar_pdf_{adf.id}",
+                    use_container_width=True,
+                ):
+                    avanzar(7)
+            with enviar_col:
+                if st.button(
+                    "📨 Enviar a validación",
+                    key=f"enviar_validacion_{adf.id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    registrar_envio_validacion(adf.id, supervisor, jefe)
+                    datos["estado_validacion"] = "Pendiente Supervisor"
+                    if supervisor:
+                        st.success("ADF enviado a validación. El Supervisor recibió una notificación dentro de RootMine.")
+                    else:
+                        st.success("ADF enviado a validación. Quedó disponible en la bandeja transversal del Ingeniero.")
+                    st.rerun()
         elif adf:
             st.info(f"Estado actual: **{adf.estado}** · {adf.etapa}")
 
-    if st.button("Ver resumen final →", use_container_width=True):
-        avanzar(9)
+    if adf and adf.estado != "Borrador":
+        if st.button("Ver resumen final →", use_container_width=True):
+            avanzar(9)
 
 
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.2.3 · análisis completado",
+        "RootMine v4.2.4 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1062,7 +1082,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.2.3 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.2.4 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)

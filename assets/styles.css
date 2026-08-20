@@ -386,3 +386,24 @@ section.main div[data-testid="stButton"] button:hover {
   min-height:170px;
 }
 .action-card.admin .action-icon{font-size:2rem;}
+
+
+/* RootMine v4.2.4 · botones de descarga con contraste */
+.stDownloadButton > button,
+div[data-testid="stDownloadButton"] > button {
+    background: linear-gradient(135deg,#0874d6,#159cff) !important;
+    color: #ffffff !important;
+    border: 1px solid #43adff !important;
+    border-radius: 10px !important;
+    min-height: 43px !important;
+    font-weight: 800 !important;
+}
+.stDownloadButton > button p,
+div[data-testid="stDownloadButton"] > button p {
+    color: #ffffff !important;
+}
+.stDownloadButton > button:hover,
+div[data-testid="stDownloadButton"] > button:hover {
+    border-color: #ff8a1c !important;
+    box-shadow: 0 0 0 2px #ff7a0033 !important;
+}
