@@ -106,6 +106,11 @@ def inicializar_sesion() -> None:
     st.session_state.setdefault("login_pendiente", None)
     st.session_state.setdefault("token_sesion", "")
     st.session_state.setdefault("ultimo_toque_sesion", None)
+    # Evita que las cookies interfieran con los botones en cada rerun.
+    # Se leen una sola vez al reconstruir la sesión después de F5.
+    st.session_state.setdefault("_contexto_browser_restaurado", False)
+    st.session_state.setdefault("_cookie_pagina_cache", None)
+    st.session_state.setdefault("_cookie_borrador_cache", None)
 
 
 def marca_compacta() -> None:
@@ -182,29 +187,62 @@ def _limpiar_token_sesion() -> None:
 
 
 def _persistir_contexto_navegacion(pagina: str) -> None:
-    """Conserva página y borrador para restaurarlos después de F5."""
-    _guardar_cookie(COOKIE_PAGINA, pagina or "🏠 Dashboard")
+    """Actualiza cookies solo cuando cambia realmente página o borrador.
+
+    No consulta cookies en cada rerun; usa una copia en session_state.
+    Esto evita que un componente de cookies interrumpa acciones de botones.
+    """
+    pagina = pagina or "🏠 Dashboard"
+    if st.session_state.get("_cookie_pagina_cache") != pagina:
+        _guardar_cookie(COOKIE_PAGINA, pagina)
+        st.session_state["_cookie_pagina_cache"] = pagina
+
     datos = st.session_state.get("nuevo_adf") or {}
-    if pagina == "📝 RootMine · Nuevo ADF" and datos.get("id_guardado") and datos.get("estado_validacion") == "Borrador":
-        _guardar_cookie(COOKIE_BORRADOR, str(datos["id_guardado"]))
-    elif pagina != "📝 RootMine · Nuevo ADF":
-        _borrar_cookie(COOKIE_BORRADOR)
+    borrador_actual = ""
+    if (
+        pagina == "📝 RootMine · Nuevo ADF"
+        and datos.get("id_guardado")
+        and datos.get("estado_validacion") == "Borrador"
+    ):
+        borrador_actual = str(datos["id_guardado"])
+
+    if st.session_state.get("_cookie_borrador_cache") != borrador_actual:
+        if borrador_actual:
+            _guardar_cookie(COOKIE_BORRADOR, borrador_actual)
+        else:
+            _borrar_cookie(COOKIE_BORRADOR)
+        st.session_state["_cookie_borrador_cache"] = borrador_actual
 
 
 def restaurar_contexto_navegacion() -> None:
-    """Después de validar la sesión, recupera página y el mismo ADF borrador."""
+    """Restaura página/borrador UNA sola vez después de F5.
+
+    En reruns posteriores no vuelve a imponer la cookie sobre la navegación
+    elegida por el usuario.
+    """
     if not st.session_state.get("usuario_actual"):
+        return
+    if st.session_state.get("_contexto_browser_restaurado"):
         return
 
     pagina_cookie = _leer_cookie(COOKIE_PAGINA)
+    borrador_cookie = _leer_cookie(COOKIE_BORRADOR)
+
+    st.session_state["_cookie_pagina_cache"] = pagina_cookie or "🏠 Dashboard"
+    st.session_state["_cookie_borrador_cache"] = borrador_cookie or ""
+
     if pagina_cookie:
         st.session_state.pagina = pagina_cookie
 
-    if st.session_state.pagina == "📝 RootMine · Nuevo ADF" and not st.session_state.get("nuevo_adf"):
-        borrador_cookie = _leer_cookie(COOKIE_BORRADOR)
-        if borrador_cookie.isdigit():
-            if not cargar_borrador_para_continuar(int(borrador_cookie)):
-                _borrar_cookie(COOKIE_BORRADOR)
+    if (
+        st.session_state.pagina == "📝 RootMine · Nuevo ADF"
+        and not st.session_state.get("nuevo_adf")
+        and borrador_cookie.isdigit()
+    ):
+        if not cargar_borrador_para_continuar(int(borrador_cookie)):
+            st.session_state["_cookie_borrador_cache"] = ""
+
+    st.session_state["_contexto_browser_restaurado"] = True
 
 
 def cerrar_sesion_rootmine() -> None:
@@ -222,7 +260,8 @@ def cerrar_sesion_rootmine() -> None:
     claves_sesion = [
         "usuario", "usuario_actual", "login_pendiente", "nuevo_adf",
         "token_sesion", "ultimo_toque_sesion", "pagina",
-        "confirmar_eliminar_borrador",
+        "confirmar_eliminar_borrador", "_contexto_browser_restaurado",
+        "_cookie_pagina_cache", "_cookie_borrador_cache",
     ]
     for clave in claves_sesion:
         st.session_state.pop(clave, None)
@@ -263,7 +302,13 @@ def _completar_login(usuario: dict) -> None:
     st.session_state.usuario = usuario["nombre"]
     st.session_state.login_pendiente = None
     st.session_state.ultimo_toque_sesion = datetime.now()
+    # Login nuevo: arranca limpio. La restauración de cookies se reserva para F5.
+    st.session_state["_contexto_browser_restaurado"] = True
+    st.session_state["_cookie_pagina_cache"] = "🏠 Dashboard"
+    st.session_state["_cookie_borrador_cache"] = ""
     _guardar_token_sesion(token)
+    _guardar_cookie(COOKIE_PAGINA, "🏠 Dashboard")
+    _borrar_cookie(COOKIE_BORRADOR)
     st.rerun()
 
 
@@ -357,8 +402,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.4 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.2.4 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.5 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.2.5 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -397,7 +442,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.4 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.5 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
