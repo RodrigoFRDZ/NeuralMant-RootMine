@@ -232,9 +232,9 @@ def mostrar_planes_accion() -> None:
                     st.write(f"**Objetivo:** {accion.get('objetivo','—')}")
                     st.write(f"**Relación con la causa:** {accion.get('relacion_con_causa','—')}")
                     c1, c2, c3 = st.columns(3)
-                    responsable = c1.text_input("Responsable", value=accion.get("responsable_sugerido", ""), key=f"pa_resp_{adf.id}_{i}")
-                    tiene_fecha = c2.checkbox("Fecha compromiso definida", value=bool(_fecha(accion.get("fecha_compromiso"))), key=f"pa_tfecha_{adf.id}_{i}")
-                    fecha_comp = c2.date_input("Fecha compromiso", value=_fecha(accion.get("fecha_compromiso")) or date.today(), disabled=not tiene_fecha, key=f"pa_fecha_{adf.id}_{i}")
+                    responsable = c1.text_input("Responsable *", value=accion.get("responsable_sugerido", ""), key=f"pa_resp_{adf.id}_{i}", help="Campo obligatorio.")
+                    fecha_comp = c2.date_input("Fecha de compromiso *", value=_fecha(accion.get("fecha_compromiso")) or date.today(), format="DD/MM/YYYY", key=f"pa_fecha_{adf.id}_{i}", help="Campo obligatorio. Selecciona la fecha en el calendario.")
+                    c2.caption(f"📅 {fecha_comp.strftime('%d/%m/%Y')}")
                     c3.metric("Estado actual", estado_calculado(accion))
                     if accion.get("estado_ejecucion") == "Ejecutado verificado":
                         c3.success("Ejecución verificada por respaldo")
@@ -324,7 +324,7 @@ def mostrar_planes_accion() -> None:
                         else:
                             accion.update({
                                 "responsable_sugerido": responsable.strip(),
-                                "fecha_compromiso": fecha_comp.isoformat() if tiene_fecha else "",
+                                "fecha_compromiso": fecha_comp.isoformat(),
                                 "evidencia_de_implementacion": observacion.strip(),
                                 "respaldos": nuevos,
                             })
@@ -378,7 +378,7 @@ Si corresponde a POEV o LUP, valida que el documento presentado corresponda real
                     if st.button("💾 Guardar responsable, fecha y respaldos", key=f"pa_save_{adf.id}_{i}", use_container_width=True):
                         accion.update({
                             "responsable_sugerido": responsable.strip(),
-                            "fecha_compromiso": fecha_comp.isoformat() if tiene_fecha else "",
+                            "fecha_compromiso": fecha_comp.isoformat(),
                             "evidencia_de_implementacion": observacion.strip(),
                             "respaldos": nuevos,
                         })

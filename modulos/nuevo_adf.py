@@ -1,4 +1,5 @@
 import json
+from datetime import date, datetime
 
 import streamlit as st
 
@@ -793,14 +794,14 @@ def paso_planes() -> None:
                     "Relación con la causa", value=accion["relacion_con_causa"],
                     key=f"rel_{indice}",
                 )
-                responsable = st.text_input(
-                    "Responsable", value=accion.get("responsable_sugerido", "Por definir"),
-                    key=f"resp_plan_{indice}",
-                )
-                plazo = st.text_input(
-                    "Plazo", value=accion.get("plazo_sugerido", "Por definir"),
-                    key=f"plazo_{indice}",
-                )
+                responsable_actual = accion.get("responsable_sugerido", "")
+                if str(responsable_actual).strip().lower() == "por definir": responsable_actual = ""
+                responsable = st.text_input("Responsable *", value=responsable_actual, key=f"resp_plan_{indice}", placeholder="Nombre de la persona responsable", help="Campo obligatorio para cada plan de acción.")
+                fecha_actual = accion.get("fecha_compromiso", "")
+                try: fecha_default = datetime.fromisoformat(str(fecha_actual)).date() if fecha_actual else date.today()
+                except (TypeError, ValueError): fecha_default = date.today()
+                fecha_compromiso = st.date_input("Fecha de compromiso *", value=fecha_default, format="DD/MM/YYYY", key=f"fecha_plan_{indice}", help="Campo obligatorio. Selecciona la fecha en el calendario.")
+                st.caption(f"📅 Compromiso: **{fecha_compromiso.strftime('%d/%m/%Y')}**")
                 evidencia = st.text_area(
                     "Evidencia de implementación",
                     value=accion["evidencia_de_implementacion"], key=f"evid_plan_{indice}",
@@ -810,9 +811,9 @@ def paso_planes() -> None:
                     "objetivo": objetivo.strip(),
                     "relacion_con_causa": relacion.strip(),
                     "responsable_sugerido": responsable.strip(),
-                    "plazo_sugerido": plazo.strip(),
+                    "plazo_sugerido": fecha_compromiso.strftime("%d/%m/%Y"),
                     "evidencia_de_implementacion": evidencia.strip(),
-                    "fecha_compromiso": accion.get("fecha_compromiso", ""),
+                    "fecha_compromiso": fecha_compromiso.isoformat(),
                     "estado_ejecucion": accion.get("estado_ejecucion", "Pendiente"),
                     "fecha_ejecucion": accion.get("fecha_ejecucion", ""),
                     "noti_sap": accion.get("noti_sap", ""),
@@ -834,6 +835,13 @@ def paso_planes() -> None:
         validas = [a for a in acciones_editadas if a["accion"] and a["relacion_con_causa"]]
         if not validas:
             st.error("Debe existir al menos una acción preventiva válida.")
+            return
+        incompletas = []
+        for n, accion in enumerate(validas, start=1):
+            if not accion.get("responsable_sugerido", "").strip(): incompletas.append(f"Acción {n}: falta Responsable")
+            if not accion.get("fecha_compromiso"): incompletas.append(f"Acción {n}: falta Fecha de compromiso")
+        if incompletas:
+            st.error("Antes de continuar completa los campos obligatorios de cada plan:\n\n- " + "\n- ".join(incompletas))
             return
         datos["plan_prevencion"] = validas
 
@@ -1036,7 +1044,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.2.5 · análisis completado",
+        "RootMine v4.3.0 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1082,7 +1090,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.2.5 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.3.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)

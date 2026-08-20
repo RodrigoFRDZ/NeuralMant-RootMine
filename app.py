@@ -402,8 +402,8 @@ def mostrar_identificacion() -> None:
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
-        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.2.5 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.2.5 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.3.0 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.3.0 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -442,7 +442,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.2.5 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.3.0 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
