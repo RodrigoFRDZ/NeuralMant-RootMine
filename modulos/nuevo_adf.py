@@ -72,6 +72,8 @@ def inicializar() -> None:
             "cadenas_causales": [],
             "plan_prevencion": [],
             "informe_final": None,
+            "_revision_etapas": {},
+            "_informe_desactualizado": False,
             "imagen_falla": None,
             "imagen_equipo": None,
             "imagen_componente": None,
@@ -116,6 +118,8 @@ def cargar_adf_para_correccion(adf_id: int) -> bool:
         "cadenas_causales": [],
         "plan_prevencion": [],
         "informe_final": None,
+            "_revision_etapas": {},
+            "_informe_desactualizado": False,
         "imagen_falla": None,
         "imagen_equipo": None,
         "imagen_componente": None,
@@ -141,7 +145,9 @@ def cargar_borrador_para_continuar(adf_id: int) -> bool:
         "relato_original": "", "casos_similares": [], "diagnostico": None, "efecto": "",
         "principio_funcionamiento": "", "ishikawa_ia": None, "ishikawa_validado": {},
         "causas_priorizadas": [], "profundizacion": None, "cadenas_causales": [], "plan_prevencion": [],
-        "informe_final": None, "imagen_falla": None, "imagen_equipo": None, "imagen_componente": None,
+        "informe_final": None,
+            "_revision_etapas": {},
+            "_informe_desactualizado": False, "imagen_falla": None, "imagen_equipo": None, "imagen_componente": None,
         "pdf_bytes": None, "solicitudes_ia": 0, "id_guardado": adf_id, "id_edicion": None,
         "estado_validacion": "Borrador",
     }
@@ -178,6 +184,8 @@ def _guardar_avance(paso_destino: int) -> bool:
 
 
 def avanzar(paso: int) -> None:
+    datos = st.session_state.nuevo_adf
+    datos["_max_paso_alcanzado"] = max(int(datos.get("_max_paso_alcanzado", 1)), int(paso))
     if not _guardar_avance(paso):
         return
     st.session_state.nuevo_adf["paso"] = paso
@@ -210,6 +218,87 @@ def indicador_consumo() -> None:
     solicitudes = st.session_state.nuevo_adf.get("solicitudes_ia", 0)
     st.caption(f"Solicitudes IA utilizadas en este ADF: {solicitudes} de 4 previstas.")
 
+
+
+ETAPAS_NAVEGABLES = {
+    1: "1 · Contexto y evidencias",
+    2: "2 · Diagnóstico",
+    3: "3 · Ishikawa 6M",
+    4: "4 · Priorización de causas",
+    5: "5 · 5 Porqués",
+    6: "6 · Planes de prevención",
+    7: "7 · Informe técnico",
+    8: "8 · PDF / envío",
+}
+
+def _marcar_cambio_desde(etapa: int) -> None:
+    """Registra que una etapa fue editada y que lo posterior debe revisarse."""
+    datos = st.session_state.nuevo_adf
+    revision = datos.setdefault("_revision_etapas", {})
+    revision[str(etapa)] = "Modificado"
+    for posterior in range(etapa + 1, 8):
+        if revision.get(str(posterior)) != "Modificado":
+            revision[str(posterior)] = "Requiere actualización"
+    if etapa <= 6:
+        datos["_informe_desactualizado"] = True
+
+def _contexto_vivo(datos: dict) -> str:
+    """Fuente única para GearBot: siempre usa el estado actualmente validado/editado."""
+    diagnostico = datos.get("diagnostico") or {}
+    return json.dumps({
+        "instruccion": (
+            "Usa como fuente de verdad los datos validados/editados por el investigador. "
+            "Si difieren de una propuesta anterior de IA, prevalece siempre la edición humana. "
+            "No inventes información ausente."
+        ),
+        "centro": datos.get("centro", ""),
+        "planta": datos.get("planta", ""),
+        "area": datos.get("area", ""),
+        "numero_equipo": datos.get("numero_equipo", ""),
+        "equipo": descripcion_equipo_para_redaccion(datos.get("equipo", "")),
+        "aviso_sap": datos.get("aviso_sap", ""),
+        "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
+        "relato_original": datos.get("relato_original", ""),
+        "diagnostico_validado": diagnostico,
+        "efecto_validado": datos.get("efecto", ""),
+        "principio_funcionamiento_validado": datos.get("principio_funcionamiento", ""),
+        "ishikawa_validado": datos.get("ishikawa_validado", {}),
+        "causas_priorizadas": datos.get("causas_priorizadas", []),
+        "cadenas_causales_validadas": datos.get("cadenas_causales", []),
+        "planes_validados": datos.get("plan_prevencion", []),
+    }, ensure_ascii=False, indent=2)
+
+def _barra_navegacion_etapas() -> None:
+    """Permite volver directamente a cualquier etapa ya alcanzada sin borrar trabajo."""
+    datos = st.session_state.nuevo_adf
+    actual = int(datos.get("paso", 1))
+    max_alcanzado = int(datos.get("_max_paso_alcanzado", actual))
+    datos["_max_paso_alcanzado"] = max(max_alcanzado, actual)
+    disponibles = [n for n in ETAPAS_NAVEGABLES if n <= max(datos["_max_paso_alcanzado"], actual)]
+    if len(disponibles) <= 1:
+        return
+    opciones = {ETAPAS_NAVEGABLES[n]: n for n in disponibles}
+    actual_label = ETAPAS_NAVEGABLES.get(actual, ETAPAS_NAVEGABLES[disponibles[-1]])
+    elegido = st.selectbox(
+        "🧭 Ir directamente a una etapa",
+        list(opciones),
+        index=list(opciones).index(actual_label) if actual_label in opciones else 0,
+        key=f"nav_etapa_{actual}",
+        help="Puedes volver a una etapa anterior, complementar información y después regresar sin crear otro ADF.",
+    )
+    destino = opciones[elegido]
+    if destino != actual and st.button("Ir a la etapa seleccionada", use_container_width=True, key=f"ir_etapa_{actual}_{destino}"):
+        datos["paso"] = destino
+        st.rerun()
+
+def _aviso_analisis_vivo() -> None:
+    datos = st.session_state.nuevo_adf
+    revision = datos.get("_revision_etapas", {})
+    pendientes = [ETAPAS_NAVEGABLES.get(int(k), k) for k,v in revision.items() if v == "Requiere actualización" and str(k).isdigit()]
+    if datos.get("_informe_desactualizado"):
+        st.info("🧠 GearBot detectará los cambios realizados y usará la última versión validada al actualizar/generar el informe.")
+    if pendientes:
+        st.caption("⚠️ Etapas posteriores potencialmente desactualizadas: " + " · ".join(pendientes))
 
 def paso_relato() -> None:
     encabezado(
@@ -617,6 +706,7 @@ def paso_ishikawa() -> None:
             st.error("Selecciona o agrega al menos una causa.")
             return
         datos["ishikawa_validado"] = resultado
+        _marcar_cambio_desde(3)
         avanzar(4)
 
 
@@ -772,6 +862,7 @@ def paso_causal() -> None:
                 st.error("Todas las respuestas causales deben quedar suficientemente desarrolladas.")
                 return
         datos["cadenas_causales"] = cadenas_editadas
+        _marcar_cambio_desde(5)
         avanzar(6)
 
 
@@ -844,33 +935,16 @@ def paso_planes() -> None:
             st.error("Antes de continuar completa los campos obligatorios de cada plan:\n\n- " + "\n- ".join(incompletas))
             return
         datos["plan_prevencion"] = validas
+        _marcar_cambio_desde(6)
 
-        contexto = json.dumps({
-            "regla_redaccion_equipo": (
-                "En toda narrativa técnica refiérete al activo por su descripción: "
-                f"{descripcion_equipo_para_redaccion(datos['equipo'])}. El N° {datos['numero_equipo']} es solo un identificador interno "
-                "y no debe utilizarse como nombre del equipo."
-            ),
-            "centro": datos["centro"],
-            "planta": datos.get("planta", ""),
-            "area": datos["area"],
-            "numero_equipo": datos["numero_equipo"],
-            "equipo": descripcion_equipo_para_redaccion(datos["equipo"]),
-            "aviso_sap": datos["aviso_sap"],
-            "tiempo_perdido_h": datos.get("tiempo_perdido_h", 0.0),
-            "relato_original": datos["relato_original"],
-            "hechos_confirmados": datos["diagnostico"]["hechos_confirmados"],
-            "efecto": datos["efecto"],
-            "principio_funcionamiento": datos["principio_funcionamiento"],
-            "ishikawa_validado": datos["ishikawa_validado"],
-            "cadenas_causales": datos["cadenas_causales"],
-            "plan_prevencion": datos["plan_prevencion"],
-        }, ensure_ascii=False, indent=2)
+        contexto = _contexto_vivo(datos)
         try:
             with st.spinner("GearBot está redactando el informe final..."):
                 informe = generar_informe_final(contexto)
             datos["informe_final"] = informe.model_dump()
-            datos["solicitudes_ia"] = 4
+            datos["_informe_desactualizado"] = False
+            datos.setdefault("_revision_etapas", {})["7"] = "Actualizado por GearBot"
+            datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
             avanzar(7)
         except Exception as error:
             mostrar_error_ia(error)
@@ -884,6 +958,21 @@ def paso_informe() -> None:
     datos = st.session_state.nuevo_adf
     informe = datos["informe_final"]
     indicador_consumo()
+
+    if datos.get("_informe_desactualizado"):
+        st.warning("⚠️ El análisis cambió después de una etapa anterior. El informe mostrado puede estar desactualizado.")
+        if st.button("🧠 Actualizar informe con los cambios validados", type="primary", use_container_width=True):
+            try:
+                with st.spinner("GearBot está reconstruyendo la redacción con el análisis actualizado..."):
+                    actualizado = generar_informe_final(_contexto_vivo(datos))
+                datos["informe_final"] = actualizado.model_dump()
+                datos["_informe_desactualizado"] = False
+                datos.setdefault("_revision_etapas", {})["7"] = "Actualizado por GearBot"
+                datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
+                st.rerun()
+            except Exception as error:
+                mostrar_error_ia(error)
+                return
 
     with st.form("form_informe"):
         titulo = st.text_input("Título", value=informe["titulo"])
@@ -1090,10 +1179,12 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.3.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.4.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
+    _barra_navegacion_etapas()
+    _aviso_analisis_vivo()
     funciones = {
         1: paso_relato,
         2: paso_diagnostico,
