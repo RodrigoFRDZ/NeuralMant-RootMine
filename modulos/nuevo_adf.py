@@ -62,6 +62,7 @@ def inicializar() -> None:
             "tiempo_perdido_h": 0.0,
             "relato_original": "",
             "casos_similares": [],
+            "antecedentes_reincidencia": [],
             "diagnostico": None,
             "efecto": "",
             "principio_funcionamiento": "",
@@ -108,6 +109,7 @@ def cargar_adf_para_correccion(adf_id: int) -> bool:
         "tiempo_perdido_h": float(getattr(adf, "tiempo_perdido_h", 0) or 0),
         "relato_original": adf.relato_original or "",
         "casos_similares": [],
+            "antecedentes_reincidencia": [],
         "diagnostico": None,
         "efecto": adf.efecto or "",
         "principio_funcionamiento": adf.investigacion_web or "",
@@ -142,7 +144,8 @@ def cargar_borrador_para_continuar(adf_id: int) -> bool:
     base = {
         "paso": 1, "centro": str(usuario.get("centro", "")).strip(), "planta": str(usuario.get("planta", "")).strip(),
         "area": "", "numero_equipo": "", "equipo": "", "aviso_sap": "", "tiempo_perdido_h": 0.0,
-        "relato_original": "", "casos_similares": [], "diagnostico": None, "efecto": "",
+        "relato_original": "", "casos_similares": [], "antecedentes_reincidencia": [],
+            "antecedentes_reincidencia": [], "diagnostico": None, "efecto": "",
         "principio_funcionamiento": "", "ishikawa_ia": None, "ishikawa_validado": {},
         "causas_priorizadas": [], "profundizacion": None, "cadenas_causales": [], "plan_prevencion": [],
         "informe_final": None,
@@ -418,7 +421,9 @@ def paso_relato() -> None:
         relato=relato.strip(),
     )
     casos = [c for c in casos if int(c.id) != int(datos.get("id_guardado") or -1)]
-    casos_relevantes = [c for c in casos if c.similitud >= 0.30][:3]
+    # Ya vienen filtrados por el mismo activo desde database.conocimiento.
+    # Mostramos hasta 3 como referencia, sin bloquear el flujo.
+    casos_relevantes = casos[:3]
 
     if borrador_existente:
         st.warning(
@@ -445,24 +450,51 @@ def paso_relato() -> None:
         if not continuar_nuevo:
             return
 
+    antecedentes_seleccionados = []
     if casos_relevantes:
-        st.warning("🔎 RootMine encontró ADF anteriores con características relacionadas a esta falla.")
+        st.info(
+            "🔎 Este equipo tiene ADF anteriores registrados. RootMine los muestra solo como referencia; "
+            "puedes continuar normalmente aunque la falla actual sea distinta."
+        )
+
+        # Una similitud alta dentro del MISMO activo se trata como posible reincidencia.
+        posibles_reincidencias = [c for c in casos_relevantes if c.similitud >= 0.62]
         for caso in casos_relevantes:
+            etiqueta = " · 🔁 Posible modo de falla repetitivo" if caso in posibles_reincidencias else ""
             st.write(
                 f"**ADF #{caso.id} · {caso.equipo}** — "
-                f"{caso.efecto or 'Fenómeno no registrado'} · "
-                f"Similitud estimada: {caso.similitud:.0%}"
+                f"{caso.efecto or 'Fenómeno no registrado'}{etiqueta}"
             )
             if caso.conclusion:
                 st.caption(f"Conclusión anterior: {caso.conclusion}")
-        if not st.button(
-            "Continuar con un nuevo análisis →",
-            key="confirmar_casos_similares",
-            type="primary",
-            use_container_width=True,
-        ):
-            st.info("Puedes revisar esos casos en Historial antes de continuar si lo consideras necesario.")
-            return
+
+        if posibles_reincidencias:
+            st.warning(
+                "RootMine detectó uno o más ADF del mismo equipo con un modo de falla suficientemente parecido. "
+                "Puedes usar sus conclusiones como antecedente técnico para este NUEVO análisis. "
+                "Los planes de acción anteriores no se copiarán."
+            )
+            opciones = {
+                f"ADF #{c.id} · {c.efecto or 'Fenómeno no registrado'}": c
+                for c in posibles_reincidencias
+            }
+            seleccion = st.multiselect(
+                "Antecedentes que quieres entregar a GearBot",
+                list(opciones.keys()),
+                key="antecedentes_reincidencia_sel",
+                help=(
+                    "GearBot considerará causa/conclusión anterior como referencia, pero deberá volver a validar "
+                    "la causa actual y proponer planes nuevos o mejorados."
+                ),
+            )
+            antecedentes_seleccionados = [opciones[x] for x in seleccion]
+            if antecedentes_seleccionados:
+                st.success(
+                    "🧠 GearBot usará las conclusiones seleccionadas como antecedente, "
+                    "sin copiar automáticamente sus planes."
+                )
+
+        st.caption("Estos antecedentes corresponden al mismo activo y nunca bloquean la creación de un nuevo ADF.")
 
     try:
         with st.spinner("GearBot está analizando el contexto técnico..."):
@@ -472,9 +504,17 @@ def paso_relato() -> None:
                 equipo=equipo_redaccion,
                 aviso_sap=aviso.strip(),
                 relato=relato.strip(),
-                casos_similares=formatear_contexto_casos(casos),
+                casos_similares=(
+                    "POSIBLE REINCIDENCIA DEL MISMO ACTIVO. Usa estas conclusiones únicamente como antecedente; "
+                    "valida nuevamente la causa actual y NO copies los planes de acción anteriores. "
+                    "Si la falla se repitió, considera explícitamente si los planes previos fueron insuficientes, "
+                    "no se ejecutaron o requieren una acción diferente.\n" +
+                    formatear_contexto_casos(antecedentes_seleccionados)
+                    if antecedentes_seleccionados else ""
+                ),
             )
         datos["casos_similares"] = [caso.__dict__ for caso in casos]
+        datos["antecedentes_reincidencia"] = [caso.__dict__ for caso in antecedentes_seleccionados]
         datos["diagnostico"] = diagnostico.model_dump()
         datos["efecto"] = diagnostico.fenomeno_propuesto
         datos["principio_funcionamiento"] = diagnostico.principio_funcionamiento
@@ -1179,7 +1219,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.4.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.4.2 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)

@@ -132,6 +132,176 @@ def _grafico_estado_planes(conteo: Counter):
     st.vega_lite_chart(spec, use_container_width=True)
 
 
+
+def _modo_falla(adf) -> str:
+    """Usa únicamente información registrada en el ADF."""
+    efecto = (getattr(adf, "efecto", "") or "").strip()
+    if efecto:
+        return efecto
+    analisis = _json(getattr(adf, "analisis_ia", ""), {})
+    if isinstance(analisis, dict):
+        return (
+            analisis.get("fenomeno_propuesto")
+            or analisis.get("fenomeno")
+            or "Modo de falla no registrado"
+        )
+    return "Modo de falla no registrado"
+
+
+def _causas_adf(adf) -> list[str]:
+    """Extrae causas raíz registradas en los 5 Porqués del ADF."""
+    cadenas = _json(getattr(adf, "cadenas_causales", ""), [])
+    causas = []
+    if isinstance(cadenas, list):
+        for cadena in cadenas:
+            if not isinstance(cadena, dict):
+                continue
+            causa = (
+                cadena.get("causa_raiz_preliminar")
+                or cadena.get("causa_raiz")
+                or cadena.get("causa")
+                or ""
+            )
+            causa = str(causa).strip()
+            if causa and causa not in causas:
+                causas.append(causa)
+    if not causas:
+        conclusion = (getattr(adf, "conclusion", "") or "").strip()
+        if conclusion:
+            causas.append(conclusion)
+    return causas
+
+
+def _reporte_modos_csv(registros) -> bytes:
+    """Reporte plano, trazable y construido solo con ADF guardados en RootMine."""
+    import csv
+    import io
+    salida = io.StringIO()
+    campos = [
+        "ADF", "Estado", "Centro", "Area", "Numero_equipo", "Equipo",
+        "Modo_falla", "Causas", "Tiempo_perdido_h"
+    ]
+    writer = csv.DictWriter(salida, fieldnames=campos, delimiter=";")
+    writer.writeheader()
+    for r in registros:
+        writer.writerow({
+            "ADF": getattr(r, "id", ""),
+            "Estado": getattr(r, "estado", "") or "",
+            "Centro": getattr(r, "centro", "") or "",
+            "Area": getattr(r, "area", "") or "",
+            "Numero_equipo": getattr(r, "numero_equipo", "") or "",
+            "Equipo": getattr(r, "equipo", "") or "",
+            "Modo_falla": _modo_falla(r),
+            "Causas": " | ".join(_causas_adf(r)),
+            "Tiempo_perdido_h": float(getattr(r, "tiempo_perdido_h", 0) or 0),
+        })
+    return salida.getvalue().encode("utf-8-sig")
+
+
+def _panel_modos_falla(registros) -> None:
+    st.markdown('<div class="analytics-divider"></div>', unsafe_allow_html=True)
+    st.markdown("## 🧩 Modos de falla y causas")
+    st.caption(
+        "Análisis construido exclusivamente con información de los ADF registrados en RootMine. "
+        "Los borradores se excluyen para no mezclar análisis incompletos."
+    )
+
+    realizados = [r for r in registros if (getattr(r, "estado", "") or "") != "Borrador"]
+    if not realizados:
+        st.info("Todavía no existen ADF realizados suficientes para analizar modos de falla.")
+        return
+
+    equipos = sorted({(r.equipo or "Sin descripción") for r in realizados})
+    colf1, colf2 = st.columns([0.65, 0.35])
+    with colf1:
+        equipo_sel = st.selectbox(
+            "Filtrar por equipo",
+            ["Todos los equipos"] + equipos,
+            key="indicador_modo_equipo",
+        )
+    with colf2:
+        solo_repetidos = st.checkbox(
+            "Solo modos repetidos",
+            value=False,
+            help="Muestra modos de falla con dos o más ADF dentro del filtro actual.",
+        )
+
+    filtrados = [
+        r for r in realizados
+        if equipo_sel == "Todos los equipos" or (r.equipo or "Sin descripción") == equipo_sel
+    ]
+
+    modos = Counter(_modo_falla(r) for r in filtrados)
+    if solo_repetidos:
+        modos = Counter({k:v for k,v in modos.items() if v >= 2})
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("ADF analizados", len(filtrados))
+    c2.metric("Modos de falla distintos", len(modos))
+    c3.metric("Modos repetidos", sum(1 for v in modos.values() if v >= 2))
+
+    _grafico_barras_horizontal(
+        dict(modos),
+        "Modos de falla registrados",
+        "Cantidad de ADF asociados a cada modo de falla.",
+        max_items=12,
+    )
+
+    st.markdown("### Detalle para gestión")
+    filas = []
+    for modo, cantidad in modos.most_common():
+        adfs_modo = [r for r in filtrados if _modo_falla(r) == modo]
+        causas = []
+        for r in adfs_modo:
+            for causa in _causas_adf(r):
+                if causa not in causas:
+                    causas.append(causa)
+        filas.append({
+            "Modo de falla": modo,
+            "ADF": cantidad,
+            "Equipos": len({(r.numero_equipo or r.equipo or "") for r in adfs_modo}),
+            "Causas registradas": " | ".join(causas[:5]) or "Sin causa estructurada",
+            "Tiempo perdido (h)": round(sum(float(getattr(r, "tiempo_perdido_h", 0) or 0) for r in adfs_modo), 2),
+        })
+
+    if filas:
+        st.dataframe(filas, use_container_width=True, hide_index=True)
+    else:
+        st.caption("No hay modos de falla que cumplan el filtro seleccionado.")
+
+    if equipo_sel != "Todos los equipos" and filtrados:
+        st.markdown(f"### Historial causal · {equipo_sel}")
+        for r in sorted(filtrados, key=lambda x: getattr(x, "id", 0), reverse=True):
+            with st.expander(f"ADF #{r.id} · {_modo_falla(r)}", expanded=False):
+                st.write(f"**Estado:** {r.estado or 'Sin estado'}")
+                st.write(f"**N° equipo:** {r.numero_equipo or 's/i'}")
+                causas = _causas_adf(r)
+                if causas:
+                    st.write("**Causas / causa raíz registrada:**")
+                    for causa in causas:
+                        st.write(f"- {causa}")
+                else:
+                    st.caption("Sin causa estructurada registrada.")
+                planes = _json(getattr(r, "plan_prevencion", ""), [])
+                if isinstance(planes, list) and planes:
+                    st.write("**Planes asociados:**")
+                    for plan in plans if False else planes:
+                        if isinstance(plan, dict):
+                            st.write(f"- {plan.get('accion','Plan sin descripción')}")
+
+    st.download_button(
+        "⬇️ Descargar reporte de modos de falla (CSV)",
+        data=_reporte_modos_csv(filtrados),
+        file_name=(
+            "RootMine_modos_falla_global.csv"
+            if equipo_sel == "Todos los equipos"
+            else "RootMine_modos_falla_" + "".join(c if c.isalnum() else "_" for c in equipo_sel)[:60] + ".csv"
+        ),
+        mime="text/csv",
+        use_container_width=True,
+    )
+
+
 def mostrar_indicadores() -> None:
     registros = listar_adf()
     st.markdown('<div class="hero"><div class="eyebrow">NEURALMANT ANALYTICS</div><h1>Indicadores RootMine</h1><p>Vista ejecutiva de impacto, validaciones y cumplimiento de planes de acción.</p></div>', unsafe_allow_html=True)
@@ -186,3 +356,5 @@ def mostrar_indicadores() -> None:
             eq = r.equipo or "Sin descripción de equipo"
             planes_equipo[eq] += 1
         _grafico_barras_horizontal(dict(planes_equipo), "Equipos con más planes de acción", max_items=8)
+
+    _panel_modos_falla(datos)

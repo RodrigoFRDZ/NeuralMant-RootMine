@@ -37,52 +37,57 @@ def buscar_casos_similares(
     relato: str,
     limite: int = 5,
 ) -> list[CasoSimilar]:
-    consulta = _tokens(f"{centro} {numero_equipo} {equipo} {relato}")
-    if not consulta:
-        return []
+    # La similitud se evalúa SOLO dentro del mismo activo.
+    # Si existe N° de equipo, ese identificador manda. Si no existe, se exige
+    # coincidencia exacta de la descripción normalizada del equipo.
+    numero_consulta = (numero_equipo or "").strip().lower()
+    equipo_consulta = " ".join((equipo or "").strip().lower().split())
+    consulta_falla = _tokens(relato or "")
 
     resultados: list[CasoSimilar] = []
     for adf in listar_adf():
         # Los borradores se controlan por separado; no deben presentarse como conocimiento histórico.
         if (getattr(adf, "estado", "") or "") == "Borrador":
             continue
-        texto = " ".join([
-            getattr(adf, "centro", "") or "",
-            getattr(adf, "planta", "") or "",
-            getattr(adf, "numero_equipo", "") or "",
-            adf.equipo or "",
+
+        numero_adf = (getattr(adf, "numero_equipo", "") or "").strip().lower()
+        equipo_adf = " ".join((adf.equipo or "").strip().lower().split())
+
+        if numero_consulta:
+            mismo_activo = numero_consulta == numero_adf
+        else:
+            mismo_activo = bool(equipo_consulta) and equipo_consulta == equipo_adf
+
+        if not mismo_activo:
+            continue
+
+        texto_falla = " ".join([
             adf.relato_original or "",
             adf.efecto or "",
             adf.conclusion or "",
             adf.causas_priorizadas or "",
         ])
-        caso = _tokens(texto)
-        if not caso:
-            continue
+        caso_falla = _tokens(texto_falla)
 
-        interseccion = len(consulta & caso)
-        similitud = interseccion / max(len(consulta), 1)
-        mismo_numero = bool(numero_equipo.strip()) and numero_equipo.strip().lower() == (getattr(adf, "numero_equipo", "") or "").strip().lower()
-        misma_descripcion = equipo.strip().lower() in (adf.equipo or "").lower()
-        mismo_centro = bool(centro.strip()) and centro.strip().lower() == (getattr(adf, "centro", "") or "").strip().lower()
-        if mismo_numero:
-            similitud += 0.55
-        elif misma_descripcion:
-            similitud += 0.30
-        # El centro ayuda a priorizar contexto local sin excluir conocimiento de otras plantas.
-        if mismo_centro:
-            similitud += 0.08
+        # Si no hay suficiente texto, igual se puede mostrar el historial del mismo equipo,
+        # pero con una similitud baja. Las palabras genéricas de otros equipos nunca entran.
+        if consulta_falla and caso_falla:
+            interseccion = len(consulta_falla & caso_falla)
+            union = len(consulta_falla | caso_falla)
+            similitud_falla = interseccion / max(union, 1)
+        else:
+            similitud_falla = 0.0
 
-        if similitud >= 0.18:
-            resultados.append(CasoSimilar(
-                id=adf.id,
-                centro=getattr(adf, "centro", "") or "No registrado",
-                numero_equipo=getattr(adf, "numero_equipo", "") or "No registrado",
-                equipo=adf.equipo,
-                efecto=adf.efecto,
-                conclusion=adf.conclusion,
-                similitud=min(similitud, 1.0),
-            ))
+        resultados.append(CasoSimilar(
+            id=adf.id,
+            centro=getattr(adf, "centro", "") or "No registrado",
+            numero_equipo=getattr(adf, "numero_equipo", "") or "No registrado",
+            equipo=adf.equipo,
+            efecto=adf.efecto,
+            conclusion=adf.conclusion,
+            # 50% base por ser el mismo activo + similitud real de la falla.
+            similitud=min(0.50 + (similitud_falla * 0.50), 1.0),
+        ))
 
     return sorted(
         resultados,
