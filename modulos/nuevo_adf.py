@@ -144,8 +144,7 @@ def cargar_borrador_para_continuar(adf_id: int) -> bool:
     base = {
         "paso": 1, "centro": str(usuario.get("centro", "")).strip(), "planta": str(usuario.get("planta", "")).strip(),
         "area": "", "numero_equipo": "", "equipo": "", "aviso_sap": "", "tiempo_perdido_h": 0.0,
-        "relato_original": "", "casos_similares": [], "antecedentes_reincidencia": [],
-            "antecedentes_reincidencia": [], "diagnostico": None, "efecto": "",
+        "relato_original": "", "casos_similares": [], "antecedentes_reincidencia": [], "diagnostico": None, "efecto": "",
         "principio_funcionamiento": "", "ishikawa_ia": None, "ishikawa_validado": {},
         "causas_priorizadas": [], "profundizacion": None, "cadenas_causales": [], "plan_prevencion": [],
         "informe_final": None,
@@ -219,7 +218,7 @@ def mostrar_error_ia(error: Exception) -> None:
 
 def indicador_consumo() -> None:
     solicitudes = st.session_state.nuevo_adf.get("solicitudes_ia", 0)
-    st.caption(f"Solicitudes IA utilizadas en este ADF: {solicitudes} de 4 previstas.")
+    st.caption(f"Solicitudes IA utilizadas en este ADF: {solicitudes}. Las actualizaciones inteligentes solo se ejecutan cuando detectan cambios guardados.")
 
 
 
@@ -234,16 +233,28 @@ ETAPAS_NAVEGABLES = {
     8: "8 · PDF / envío",
 }
 
+
+def _serializable(valor) -> str:
+    try:
+        return json.dumps(valor, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(valor)
+
+
+def _cambio_real(anterior, nuevo) -> bool:
+    return _serializable(anterior) != _serializable(nuevo)
+
+
 def _marcar_cambio_desde(etapa: int) -> None:
-    """Registra que una etapa fue editada y que lo posterior debe revisarse."""
+    """Registra que una etapa fue editada y que todo lo posterior debe reconstruirse."""
     datos = st.session_state.nuevo_adf
     revision = datos.setdefault("_revision_etapas", {})
-    revision[str(etapa)] = "Modificado"
+    revision[str(etapa)] = "Modificado por investigador"
     for posterior in range(etapa + 1, 8):
-        if revision.get(str(posterior)) != "Modificado":
-            revision[str(posterior)] = "Requiere actualización"
+        revision[str(posterior)] = "Requiere actualización"
     if etapa <= 6:
         datos["_informe_desactualizado"] = True
+
 
 def _contexto_vivo(datos: dict) -> str:
     """Fuente única para GearBot: siempre usa el estado actualmente validado/editado."""
@@ -252,7 +263,8 @@ def _contexto_vivo(datos: dict) -> str:
         "instruccion": (
             "Usa como fuente de verdad los datos validados/editados por el investigador. "
             "Si difieren de una propuesta anterior de IA, prevalece siempre la edición humana. "
-            "No inventes información ausente."
+            "No inventes información ausente. Si el investigador modificó una cadena causal, "
+            "conserva el significado técnico de su edición y mejora solo coherencia, continuidad y redacción."
         ),
         "centro": datos.get("centro", ""),
         "planta": datos.get("planta", ""),
@@ -271,12 +283,38 @@ def _contexto_vivo(datos: dict) -> str:
         "planes_validados": datos.get("plan_prevencion", []),
     }, ensure_ascii=False, indent=2)
 
+
+def _navegacion_retroceso_form(actual: int):
+    """Selector DENTRO del formulario: al enviar también viajan todos los cambios de pantalla."""
+    anteriores = [n for n in ETAPAS_NAVEGABLES if n < actual]
+    if not anteriores:
+        return None, False
+    st.markdown("---")
+    st.caption("🧭 Navegación segura · RootMine guardará primero lo que acabas de editar.")
+    etiquetas = [ETAPAS_NAVEGABLES[n] for n in reversed(anteriores)]
+    seleccion = st.selectbox(
+        "¿A qué etapa anterior quieres volver?",
+        etiquetas,
+        key=f"destino_seguro_{actual}",
+    )
+    destino = next(n for n, etiqueta in ETAPAS_NAVEGABLES.items() if etiqueta == seleccion)
+    viajar = st.form_submit_button(
+        "💾 Guardar cambios e ir a la etapa seleccionada",
+        use_container_width=True,
+        key=f"viajar_guardando_{actual}",
+    )
+    return destino, viajar
+
+
 def _barra_navegacion_etapas() -> None:
-    """Permite volver directamente a cualquier etapa ya alcanzada sin borrar trabajo."""
+    """En etapas editables evita saltos que podrían descartar campos aún no enviados."""
     datos = st.session_state.nuevo_adf
     actual = int(datos.get("paso", 1))
     max_alcanzado = int(datos.get("_max_paso_alcanzado", actual))
     datos["_max_paso_alcanzado"] = max(max_alcanzado, actual)
+    if 1 <= actual <= 7:
+        st.caption("🧭 En las etapas editables RootMine evita saltos directos que puedan perder datos. Para retroceder usa **Navegación segura** al final de la etapa.")
+        return
     disponibles = [n for n in ETAPAS_NAVEGABLES if n <= max(datos["_max_paso_alcanzado"], actual)]
     if len(disponibles) <= 1:
         return
@@ -287,21 +325,159 @@ def _barra_navegacion_etapas() -> None:
         list(opciones),
         index=list(opciones).index(actual_label) if actual_label in opciones else 0,
         key=f"nav_etapa_{actual}",
-        help="Puedes volver a una etapa anterior, complementar información y después regresar sin crear otro ADF.",
     )
     destino = opciones[elegido]
     if destino != actual and st.button("Ir a la etapa seleccionada", use_container_width=True, key=f"ir_etapa_{actual}_{destino}"):
-        datos["paso"] = destino
-        st.rerun()
+        if _guardar_avance(destino):
+            datos["paso"] = destino
+            st.rerun()
+
 
 def _aviso_analisis_vivo() -> None:
     datos = st.session_state.nuevo_adf
     revision = datos.get("_revision_etapas", {})
     pendientes = [ETAPAS_NAVEGABLES.get(int(k), k) for k,v in revision.items() if v == "Requiere actualización" and str(k).isdigit()]
-    if datos.get("_informe_desactualizado"):
-        st.info("🧠 GearBot detectará los cambios realizados y usará la última versión validada al actualizar/generar el informe.")
+    if datos.get("_informe_desactualizado") or pendientes:
+        st.info(
+            "🧠 **Análisis vivo activo:** RootMine detectó cambios guardados. "
+            "GearBot actualizará automáticamente cada etapa dependiente cuando vuelvas a entrar en ella, "
+            "usando siempre tu última versión como fuente de verdad."
+        )
     if pendientes:
-        st.caption("⚠️ Etapas posteriores potencialmente desactualizadas: " + " · ".join(pendientes))
+        st.caption("Pendientes de refresh inteligente: " + " · ".join(pendientes))
+
+
+def _limpiar_widgets(prefijos: tuple[str, ...]) -> None:
+    for clave in list(st.session_state.keys()):
+        if any(str(clave).startswith(prefijo) for prefijo in prefijos):
+            st.session_state.pop(clave, None)
+
+
+def _cadenas_modelo_a_validadas(profundizacion: dict) -> list[dict]:
+    salida = []
+    for cadena in (profundizacion or {}).get("cadenas", []):
+        niveles = []
+        for nivel in cadena.get("niveles", []):
+            niveles.append({
+                "nivel": nivel.get("nivel"),
+                "pregunta": (nivel.get("pregunta") or "").strip(),
+                "respuesta": (nivel.get("respuesta_sugerida") or "").strip(),
+                "justificacion": (nivel.get("justificacion_tecnica") or "").strip(),
+                "evidencia": (nivel.get("evidencia_requerida") or "").strip(),
+            })
+        salida.append({
+            "causa": (cadena.get("causa") or "").strip(),
+            "niveles": niveles,
+            "causa_raiz_preliminar": (cadena.get("causa_raiz_preliminar") or "").strip(),
+        })
+    return salida
+
+
+def _auto_refrescar_ishikawa(datos: dict) -> None:
+    revision = datos.setdefault("_revision_etapas", {})
+    if revision.get("3") != "Requiere actualización":
+        return
+    try:
+        with st.spinner("🧠 GearBot está actualizando el Ishikawa con tus últimos cambios..."):
+            ishikawa = generar_ishikawa(
+                area=datos["area"],
+                equipo=descripcion_equipo_para_redaccion(datos["equipo"]),
+                relato=datos["relato_original"],
+                fenomeno=datos["efecto"],
+                principio_funcionamiento=datos["principio_funcionamiento"],
+                hechos=(datos.get("diagnostico") or {}).get("hechos_confirmados", []),
+            )
+        datos["ishikawa_ia"] = ishikawa.model_dump()
+        revision["3"] = "Actualizado por GearBot"
+        datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
+        _limpiar_widgets(("inc_", "mec_", "extra_causa_", "cantidad_extra_"))
+        st.success("✅ Ishikawa actualizado automáticamente a partir de la última información guardada.")
+    except Exception as error:
+        mostrar_error_ia(error)
+
+
+def _auto_refrescar_cadenas(datos: dict) -> None:
+    revision = datos.setdefault("_revision_etapas", {})
+    if revision.get("5") != "Requiere actualización":
+        return
+    causas = list(datos.get("causas_priorizadas") or [])
+    if not causas:
+        return
+    try:
+        with st.spinner("🧠 GearBot está reconstruyendo los 5 Porqués con tus cambios..."):
+            resultado = generar_cadenas_y_planes(
+                efecto=datos["efecto"],
+                principio_funcionamiento=datos["principio_funcionamiento"],
+                causas_seleccionadas=causas,
+                contexto_validado=(
+                    "RECALCULO AUTOMÁTICO. Usa únicamente la última versión guardada por el investigador. "
+                    "Alinea cada pregunta con la respuesta anterior y evita saltos lógicos.\n" + _contexto_vivo(datos)
+                ),
+            )
+        datos["profundizacion"] = resultado.model_dump()
+        datos["cadenas_causales"] = []
+        datos["plan_prevencion"] = []
+        revision["5"] = "Actualizado por GearBot"
+        revision["6"] = "Requiere actualización"
+        datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
+        _limpiar_widgets(("preg_", "resp_", "just_", "evid_", "raiz_", "cantidad_niveles_"))
+        st.success("✅ Los 5 Porqués fueron recalculados automáticamente con el análisis actualizado.")
+    except Exception as error:
+        mostrar_error_ia(error)
+
+
+def _auto_refrescar_desde_5porques(datos: dict) -> None:
+    """Si el investigador editó la cadena, GearBot armoniza redacción y rehace los planes dependientes."""
+    revision = datos.setdefault("_revision_etapas", {})
+    if revision.get("6") != "Requiere actualización" or not datos.get("cadenas_causales"):
+        return
+    causas = list(datos.get("causas_priorizadas") or [])
+    if not causas:
+        return
+    try:
+        with st.spinner("🧠 GearBot está revisando la coherencia de los 5 Porqués y actualizando los planes..."):
+            resultado = generar_cadenas_y_planes(
+                efecto=datos["efecto"],
+                principio_funcionamiento=datos["principio_funcionamiento"],
+                causas_seleccionadas=causas,
+                contexto_validado=(
+                    "REFRESH DESPUÉS DE EDICIÓN HUMANA. Las cadenas causales incluidas en el contexto fueron editadas "
+                    "por el investigador y son la fuente de verdad. Conserva sus hechos y significado técnico. "
+                    "Mejora la continuidad pregunta-respuesta, la redacción y la causa raíz solo cuando sea necesario; "
+                    "no inventes hechos. Luego genera planes coherentes con esa versión corregida.\n" + _contexto_vivo(datos)
+                ),
+            )
+        datos["profundizacion"] = resultado.model_dump()
+        refinadas = _cadenas_modelo_a_validadas(datos["profundizacion"])
+        if refinadas:
+            datos["cadenas_causales"] = refinadas
+        datos["plan_prevencion"] = []
+        revision["5"] = "Revisado por GearBot tras edición"
+        revision["6"] = "Actualizado por GearBot"
+        revision["7"] = "Requiere actualización"
+        datos["_informe_desactualizado"] = True
+        datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
+        _limpiar_widgets(("accion_", "obj_", "rel_", "resp_plan_", "fecha_plan_", "evid_plan_"))
+        st.success("✅ GearBot conservó tus cambios como base, revisó la coherencia del 5 Porqués y actualizó los planes sugeridos.")
+    except Exception as error:
+        mostrar_error_ia(error)
+
+
+def _auto_refrescar_informe(datos: dict) -> None:
+    revision = datos.setdefault("_revision_etapas", {})
+    if not (datos.get("_informe_desactualizado") or revision.get("7") == "Requiere actualización"):
+        return
+    try:
+        with st.spinner("🧠 GearBot está actualizando automáticamente la redacción final..."):
+            actualizado = generar_informe_final(_contexto_vivo(datos))
+        datos["informe_final"] = actualizado.model_dump()
+        datos["_informe_desactualizado"] = False
+        revision["7"] = "Actualizado por GearBot"
+        datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
+        st.success("✅ Informe actualizado automáticamente con la última versión del análisis.")
+    except Exception as error:
+        mostrar_error_ia(error)
+
 
 def paso_relato() -> None:
     encabezado(
@@ -588,9 +764,17 @@ def paso_diagnostico() -> None:
         continuar = c2.form_submit_button(
             "Generar Ishikawa con IA →", type="primary", use_container_width=True,
         )
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(2)
 
-    if volver:
-        avanzar(1)
+    if volver or viajar_seguro:
+        nuevo_efecto = efecto.strip()
+        nuevo_principio = principio.strip()
+        if _cambio_real(datos.get("efecto", ""), nuevo_efecto) or _cambio_real(datos.get("principio_funcionamiento", ""), nuevo_principio):
+            datos["efecto"] = nuevo_efecto
+            datos["principio_funcionamiento"] = nuevo_principio
+            _marcar_cambio_desde(2)
+        avanzar(destino_seguro if viajar_seguro else 1)
+        return
     if continuar:
         if len(efecto.strip()) < 10:
             st.error("El fenómeno necesita mayor precisión.")
@@ -598,8 +782,15 @@ def paso_diagnostico() -> None:
         if len(principio.strip()) < 30:
             st.error("Explica con mayor detalle el principio de funcionamiento.")
             return
-        datos["efecto"] = efecto.strip()
-        datos["principio_funcionamiento"] = principio.strip()
+        nuevo_efecto = efecto.strip()
+        nuevo_principio = principio.strip()
+        if _cambio_real(datos.get("efecto", ""), nuevo_efecto) or _cambio_real(datos.get("principio_funcionamiento", ""), nuevo_principio):
+            datos["efecto"] = nuevo_efecto
+            datos["principio_funcionamiento"] = nuevo_principio
+            _marcar_cambio_desde(2)
+        else:
+            datos["efecto"] = nuevo_efecto
+            datos["principio_funcionamiento"] = nuevo_principio
         try:
             with st.spinner("GearBot está construyendo el Ishikawa 6M..."):
                 ishikawa = generar_ishikawa(
@@ -611,7 +802,8 @@ def paso_diagnostico() -> None:
                     hechos=diagnostico["hechos_confirmados"],
                 )
             datos["ishikawa_ia"] = ishikawa.model_dump()
-            datos["solicitudes_ia"] = 2
+            datos.setdefault("_revision_etapas", {})["3"] = "Actualizado por GearBot"
+            datos["solicitudes_ia"] = max(2, int(datos.get("solicitudes_ia", 0)) + 1)
             avanzar(3)
         except Exception as error:
             mostrar_error_ia(error)
@@ -623,8 +815,10 @@ def paso_ishikawa() -> None:
         "Revisa la matriz uniforme y selecciona solo las causas aplicables.",
     )
     datos = st.session_state.nuevo_adf
+    _auto_refrescar_ishikawa(datos)
     ishikawa = datos["ishikawa_ia"]
     indicador_consumo()
+    ishikawa_guardado = datos.get("ishikawa_validado") or {}
     mostrar_ishikawa(datos["efecto"], ishikawa)
 
     st.info(ishikawa.get("resumen_tecnico", ""))
@@ -664,15 +858,19 @@ def paso_ishikawa() -> None:
         for categoria, clave in CATEGORIAS.items():
             with st.expander(categoria, expanded=True):
                 seleccionadas = []
+                guardadas_categoria = ishikawa_guardado.get(categoria, []) if isinstance(ishikawa_guardado, dict) else []
+                guardadas_por_causa = {str(x.get("causa", "")): x for x in guardadas_categoria if isinstance(x, dict)}
+                causas_ia_nombres = {str(x.get("causa", "")) for x in ishikawa.get(clave, []) if isinstance(x, dict)}
                 for indice, causa in enumerate(ishikawa.get(clave, [])):
+                    guardada = guardadas_por_causa.get(str(causa.get("causa", "")))
                     incluir = st.checkbox(
                         f"{causa['causa']} · Prioridad {causa['prioridad_revision']}",
-                        value=causa["prioridad_revision"] == "Alta",
+                        value=(True if guardada else causa["prioridad_revision"] == "Alta"),
                         key=f"inc_{clave}_{indice}",
                     )
                     mecanismo = st.text_area(
                         f"Mecanismo - {causa['causa']}",
-                        value=causa["mecanismo"],
+                        value=(guardada.get("mecanismo", causa["mecanismo"]) if guardada else causa["mecanismo"]),
                         key=f"mec_{clave}_{indice}",
                         height=75,
                     )
@@ -682,14 +880,20 @@ def paso_ishikawa() -> None:
                         seleccionadas.append({**causa, "mecanismo": mecanismo.strip()})
 
                 st.markdown("**Agregar causas observadas por el equipo investigador**")
+                extras_guardadas = [
+                    x for x in guardadas_categoria
+                    if isinstance(x, dict) and str(x.get("causa", "")) not in causas_ia_nombres
+                ]
                 cantidad_key = f"cantidad_extra_{clave}"
                 if cantidad_key not in st.session_state:
-                    st.session_state[cantidad_key] = 1
+                    st.session_state[cantidad_key] = max(1, len(extras_guardadas))
                 cantidad = max(1, int(st.session_state[cantidad_key]))
 
                 for extra_idx in range(cantidad):
+                    valor_extra = extras_guardadas[extra_idx].get("causa", "") if extra_idx < len(extras_guardadas) else ""
                     causa_extra = st.text_input(
                         f"Causa adicional {extra_idx + 1}",
+                        value=valor_extra,
                         key=f"extra_causa_{clave}_{extra_idx}",
                         placeholder="Ej.: Holgura fuera de estándar en soporte de guía",
                     )
@@ -725,6 +929,7 @@ def paso_ishikawa() -> None:
         continuar = c2.form_submit_button(
             "Seleccionar causas para 5 Porqués →", type="primary", use_container_width=True,
         )
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(3)
 
     ajuste = st.session_state.pop("_ishikawa_ajuste", None)
     if ajuste:
@@ -739,14 +944,21 @@ def paso_ishikawa() -> None:
             st.session_state.pop(f"extra_causa_{clave_ajuste}_{ultima}", None)
         st.rerun()
 
-    if volver:
-        avanzar(2)
+    if volver or viajar_seguro:
+        if _cambio_real(datos.get("ishikawa_validado", {}), resultado):
+            datos["ishikawa_validado"] = resultado
+            _marcar_cambio_desde(3)
+        avanzar(destino_seguro if viajar_seguro else 2)
+        return
     if continuar:
         if sum(len(items) for items in resultado.values()) < 1:
             st.error("Selecciona o agrega al menos una causa.")
             return
-        datos["ishikawa_validado"] = resultado
-        _marcar_cambio_desde(3)
+        if _cambio_real(datos.get("ishikawa_validado", {}), resultado):
+            datos["ishikawa_validado"] = resultado
+            _marcar_cambio_desde(3)
+        else:
+            datos["ishikawa_validado"] = resultado
         avanzar(4)
 
 
@@ -765,7 +977,7 @@ def paso_priorizacion() -> None:
     with st.form("form_priorizar"):
         priorizadas = st.multiselect(
             "Causas a profundizar", options=opciones,
-            default=opciones[: min(2, len(opciones))],
+            default=[x for x in (datos.get("causas_priorizadas") or []) if x in opciones] or opciones[: min(2, len(opciones))],
             help="Para cuidar cuota y claridad, se recomienda seleccionar entre 1 y 3.",
         )
         c1, c2 = st.columns(2)
@@ -773,13 +985,22 @@ def paso_priorizacion() -> None:
         generar = c2.form_submit_button(
             "Generar 5 Porqués y planes con IA →", type="primary", use_container_width=True,
         )
-    if volver:
-        avanzar(3)
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(4)
+    if volver or viajar_seguro:
+        if _cambio_real(datos.get("causas_priorizadas", []), priorizadas):
+            datos["causas_priorizadas"] = list(priorizadas)
+            _marcar_cambio_desde(4)
+        avanzar(destino_seguro if viajar_seguro else 3)
+        return
     if generar:
         if not priorizadas:
             st.error("Selecciona al menos una causa probable.")
             return
-        datos["causas_priorizadas"] = priorizadas
+        if _cambio_real(datos.get("causas_priorizadas", []), priorizadas):
+            datos["causas_priorizadas"] = list(priorizadas)
+            _marcar_cambio_desde(4)
+        else:
+            datos["causas_priorizadas"] = list(priorizadas)
         contexto = (
             f"Equipo: {descripcion_equipo_para_redaccion(datos['equipo'])}\n"
             f"Relato: {datos['relato_original']}\n"
@@ -795,7 +1016,9 @@ def paso_priorizacion() -> None:
                     contexto_validado=contexto,
                 )
             datos["profundizacion"] = resultado.model_dump()
-            datos["solicitudes_ia"] = 3
+            datos.setdefault("_revision_etapas", {})["5"] = "Actualizado por GearBot"
+            datos.setdefault("_revision_etapas", {})["6"] = "Requiere actualización"
+            datos["solicitudes_ia"] = max(3, int(datos.get("solicitudes_ia", 0)) + 1)
             avanzar(5)
         except Exception as error:
             mostrar_error_ia(error)
@@ -807,8 +1030,31 @@ def paso_causal() -> None:
         "La IA define entre 3 y 5 niveles según la complejidad. Puedes agregar o quitar niveles antes de continuar.",
     )
     datos = st.session_state.nuevo_adf
+    _auto_refrescar_cadenas(datos)
     indicador_consumo()
-    profundizacion = datos["profundizacion"]
+    profundizacion = dict(datos["profundizacion"] or {})
+    if datos.get("cadenas_causales"):
+        cadenas_para_form = []
+        base_por_causa = {str(c.get("causa", "")): c for c in profundizacion.get("cadenas", []) if isinstance(c, dict)}
+        for cadena_validada in datos["cadenas_causales"]:
+            base = base_por_causa.get(str(cadena_validada.get("causa", "")), {})
+            niveles = []
+            for nivel in cadena_validada.get("niveles", []):
+                niveles.append({
+                    "nivel": nivel.get("nivel"),
+                    "pregunta": nivel.get("pregunta", ""),
+                    "respuesta_sugerida": nivel.get("respuesta", ""),
+                    "justificacion_tecnica": nivel.get("justificacion", ""),
+                    "evidencia_requerida": nivel.get("evidencia", ""),
+                })
+            cadenas_para_form.append({
+                **base,
+                "causa": cadena_validada.get("causa", base.get("causa", "")),
+                "niveles": niveles,
+                "causa_raiz_preliminar": cadena_validada.get("causa_raiz_preliminar", ""),
+                "advertencia": base.get("advertencia", "Debe validarse en terreno."),
+            })
+        profundizacion["cadenas"] = cadenas_para_form
 
     with st.form("form_cadenas"):
         cadenas_editadas = []
@@ -890,9 +1136,14 @@ def paso_causal() -> None:
         continuar = c2.form_submit_button(
             "Revisar planes preventivos →", type="primary", use_container_width=True,
         )
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(5)
 
-    if volver:
-        avanzar(4)
+    if volver or viajar_seguro:
+        if _cambio_real(datos.get("cadenas_causales", []), cadenas_editadas):
+            datos["cadenas_causales"] = cadenas_editadas
+            _marcar_cambio_desde(5)
+        avanzar(destino_seguro if viajar_seguro else 4)
+        return
     if continuar:
         for cadena in cadenas_editadas:
             if len(cadena["niveles"]) < 3:
@@ -901,8 +1152,11 @@ def paso_causal() -> None:
             if any(len(nivel["respuesta"]) < 8 for nivel in cadena["niveles"]):
                 st.error("Todas las respuestas causales deben quedar suficientemente desarrolladas.")
                 return
-        datos["cadenas_causales"] = cadenas_editadas
-        _marcar_cambio_desde(5)
+        if _cambio_real(datos.get("cadenas_causales", []), cadenas_editadas):
+            datos["cadenas_causales"] = cadenas_editadas
+            _marcar_cambio_desde(5)
+        else:
+            datos["cadenas_causales"] = cadenas_editadas
         avanzar(6)
 
 
@@ -912,8 +1166,9 @@ def paso_planes() -> None:
         "Ajusta acciones, responsables, plazos y evidencias antes del informe.",
     )
     datos = st.session_state.nuevo_adf
+    _auto_refrescar_desde_5porques(datos)
     indicador_consumo()
-    acciones = datos["profundizacion"].get("plan_prevencion", [])
+    acciones = datos.get("plan_prevencion") or datos["profundizacion"].get("plan_prevencion", [])
 
     with st.form("form_planes"):
         acciones_editadas = []
@@ -959,9 +1214,14 @@ def paso_planes() -> None:
         generar = c2.form_submit_button(
             "Generar redacción final con IA →", type="primary", use_container_width=True,
         )
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(6)
 
-    if volver:
-        avanzar(5)
+    if volver or viajar_seguro:
+        if _cambio_real(datos.get("plan_prevencion", []), acciones_editadas):
+            datos["plan_prevencion"] = acciones_editadas
+            _marcar_cambio_desde(6)
+        avanzar(destino_seguro if viajar_seguro else 5)
+        return
     if generar:
         validas = [a for a in acciones_editadas if a["accion"] and a["relacion_con_causa"]]
         if not validas:
@@ -974,8 +1234,11 @@ def paso_planes() -> None:
         if incompletas:
             st.error("Antes de continuar completa los campos obligatorios de cada plan:\n\n- " + "\n- ".join(incompletas))
             return
-        datos["plan_prevencion"] = validas
-        _marcar_cambio_desde(6)
+        if _cambio_real(datos.get("plan_prevencion", []), validas):
+            datos["plan_prevencion"] = validas
+            _marcar_cambio_desde(6)
+        else:
+            datos["plan_prevencion"] = validas
 
         contexto = _contexto_vivo(datos)
         try:
@@ -996,23 +1259,9 @@ def paso_informe() -> None:
         "Cuarta llamada completada. Revisa y edita la propuesta antes de guardar y generar el PDF.",
     )
     datos = st.session_state.nuevo_adf
+    _auto_refrescar_informe(datos)
     informe = datos["informe_final"]
     indicador_consumo()
-
-    if datos.get("_informe_desactualizado"):
-        st.warning("⚠️ El análisis cambió después de una etapa anterior. El informe mostrado puede estar desactualizado.")
-        if st.button("🧠 Actualizar informe con los cambios validados", type="primary", use_container_width=True):
-            try:
-                with st.spinner("GearBot está reconstruyendo la redacción con el análisis actualizado..."):
-                    actualizado = generar_informe_final(_contexto_vivo(datos))
-                datos["informe_final"] = actualizado.model_dump()
-                datos["_informe_desactualizado"] = False
-                datos.setdefault("_revision_etapas", {})["7"] = "Actualizado por GearBot"
-                datos["solicitudes_ia"] = int(datos.get("solicitudes_ia", 0)) + 1
-                st.rerun()
-            except Exception as error:
-                mostrar_error_ia(error)
-                return
 
     with st.form("form_informe"):
         titulo = st.text_input("Título", value=informe["titulo"])
@@ -1028,9 +1277,25 @@ def paso_informe() -> None:
         guardar = c2.form_submit_button(
             "Guardar ADF y preparar PDF →", type="primary", use_container_width=True,
         )
+        destino_seguro, viajar_seguro = _navegacion_retroceso_form(7)
 
-    if volver:
-        avanzar(6)
+    if volver or viajar_seguro:
+        informe_editado = {
+            **informe,
+            "titulo": titulo.strip(),
+            "resumen_ejecutivo": resumen.strip(),
+            "descripcion_evento": descripcion.strip(),
+            "principio_funcionamiento": principio.strip(),
+            "fenomeno_investigado": fenomeno.strip(),
+            "sintesis_ishikawa": sintesis.strip(),
+            "conclusion_tecnica": conclusion.strip(),
+            "leccion_aprendida": leccion.strip(),
+        }
+        if _cambio_real(datos.get("informe_final", {}), informe_editado):
+            datos["informe_final"] = informe_editado
+            datos.setdefault("_revision_etapas", {})["7"] = "Modificado por investigador"
+        avanzar(destino_seguro if viajar_seguro else 6)
+        return
     if guardar:
         if len(conclusion.strip()) < 30:
             st.error("La conclusión necesita mayor desarrollo.")
@@ -1173,7 +1438,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.3.0 · análisis completado",
+        "RootMine v4.5.0 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1219,7 +1484,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.4.2 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.5.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
