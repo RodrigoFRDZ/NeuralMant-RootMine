@@ -3,6 +3,7 @@ import streamlit as st
 from modulos.historial import _pdf_desde_registro
 
 from database.repositorio_adf import aplicar_validacion, historial_validaciones, listar_pendientes_para, resolver_devolucion_jefatura
+from modulos.nuevo_adf import cargar_adf_devuelto_jefatura_para_correccion
 
 
 def _detalle_adf(adf) -> None:
@@ -103,26 +104,60 @@ def mostrar_validaciones() -> None:
             elif adf.estado == "Devuelto por Jefatura":
                 if rol == "ingeniero":
                     st.info("⚙️ Si intervienes como reemplazo del Supervisor, quedará registrado en la trazabilidad.")
+                correo_actual = (usuario.get("correo") or "").lower().strip()
+                es_creador_actual = correo_actual == (adf.creado_por_email or "").lower().strip()
+                if es_creador_actual:
+                    st.info(
+                        "✏️ Este ADF fue creado por tu misma cuenta. Puedes corregirlo directamente y "
+                        "reenviarlo a Jefatura sin devolvértelo a ti mismo."
+                    )
+                else:
+                    st.info(
+                        "Puedes devolverlo al creador o corregirlo directamente como Supervisor. "
+                        "Si lo corriges aquí, conservará el mismo ID y volverá directo a Jefatura."
+                    )
+
                 comentario = st.text_area(
                     "Comentario del Supervisor",
                     key=f"comentario_dev_jef_{adf.id}",
                     placeholder="Indica qué debe corregirse o deja una nota de la revisión realizada.",
                 )
-                d1, d2 = st.columns(2)
-                if d1.button("↩️ DEVOLVER AL CREADOR", key=f"devolver_creador_{adf.id}", use_container_width=True):
-                    try:
-                        resolver_devolucion_jefatura(adf.id, usuario, "devolver_creador", comentario)
-                        st.warning(f"ADF #{adf.id} devuelto al creador para corrección.")
-                        st.rerun()
-                    except Exception as error:
-                        st.error(str(error))
-                if d2.button("✅ REENVIAR A JEFATURA", key=f"reenviar_jefe_{adf.id}", type="primary", use_container_width=True):
-                    try:
-                        resolver_devolucion_jefatura(adf.id, usuario, "reenviar_jefe", comentario)
-                        st.success(f"ADF #{adf.id} reenviado a Jefatura.")
-                        st.rerun()
-                    except Exception as error:
-                        st.error(str(error))
+
+                if es_creador_actual:
+                    d_editar, d_reenviar = st.columns(2)
+                    if d_editar.button("✏️ CORREGIR ADF", key=f"corregir_jef_{adf.id}", type="primary", use_container_width=True):
+                        if cargar_adf_devuelto_jefatura_para_correccion(adf.id):
+                            st.rerun()
+                        else:
+                            st.error("No fue posible abrir este ADF para corrección.")
+                    if d_reenviar.button("✅ REENVIAR A JEFATURA", key=f"reenviar_jefe_{adf.id}", use_container_width=True):
+                        try:
+                            resolver_devolucion_jefatura(adf.id, usuario, "reenviar_jefe", comentario)
+                            st.success(f"ADF #{adf.id} reenviado a Jefatura.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+                else:
+                    d1, d2, d3 = st.columns(3)
+                    if d1.button("↩️ DEVOLVER AL CREADOR", key=f"devolver_creador_{adf.id}", use_container_width=True):
+                        try:
+                            resolver_devolucion_jefatura(adf.id, usuario, "devolver_creador", comentario)
+                            st.warning(f"ADF #{adf.id} devuelto al creador para corrección.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
+                    if d2.button("✏️ CORREGIR ADF", key=f"corregir_jef_{adf.id}", type="primary", use_container_width=True):
+                        if cargar_adf_devuelto_jefatura_para_correccion(adf.id):
+                            st.rerun()
+                        else:
+                            st.error("No fue posible abrir este ADF para corrección.")
+                    if d3.button("✅ REENVIAR A JEFATURA", key=f"reenviar_jefe_{adf.id}", use_container_width=True):
+                        try:
+                            resolver_devolucion_jefatura(adf.id, usuario, "reenviar_jefe", comentario)
+                            st.success(f"ADF #{adf.id} reenviado a Jefatura.")
+                            st.rerun()
+                        except Exception as error:
+                            st.error(str(error))
             else:
                 if rol == "ingeniero":
                     st.info("⚙️ Si intervienes fuera del responsable asignado, quedará registrado como reemplazo extraordinario.")

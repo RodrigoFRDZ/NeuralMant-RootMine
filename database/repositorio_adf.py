@@ -86,11 +86,17 @@ def guardar_borrador_adf(datos: dict, usuario: dict, paso: int) -> int:
             )
             session.add(adf)
             session.flush()
-        elif adf.estado not in {"Borrador", "Requiere corrección", "Rechazado"}:
+        elif adf.estado not in {"Borrador", "Requiere corrección", "Rechazado", "Devuelto por Jefatura"}:
             return adf.id
         else:
-            adf.estado = "Borrador"
-            adf.etapa = etapa
+            # Si el Supervisor está corrigiendo una observación de Jefatura,
+            # conservamos el estado para no perder el flujo ni la trazabilidad.
+            if bool(datos.get("_correccion_jefatura")):
+                adf.estado = "Devuelto por Jefatura"
+                adf.etapa = "Corrección Supervisor por observación de Jefatura"
+            else:
+                adf.estado = "Borrador"
+                adf.etapa = etapa
             adf.centro = str(datos.get("centro") or adf.centro or "")
             adf.planta = str(datos.get("planta") or adf.planta or "")
             adf.area = str(datos.get("area") or adf.area or "Sin definir")
@@ -358,8 +364,13 @@ def guardar_adf(datos: dict) -> int:
         return adf.id
 
 
-def actualizar_adf(adf_id: int, datos: dict) -> int:
-    """Actualiza un ADF existente conservando su ID y trazabilidad de validaciones."""
+def actualizar_adf(adf_id: int, datos: dict, conservar_devolucion_jefatura: bool = False) -> int:
+    """Actualiza un ADF existente conservando su ID y trazabilidad de validaciones.
+
+    Cuando ``conservar_devolucion_jefatura`` es True, la edición corresponde a una
+    corrección realizada por Supervisor después de un rechazo de Jefatura. En ese
+    caso no se reinicia el flujo a Supervisor ni se borra la observación de Jefatura.
+    """
     with Session(engine) as session:
         adf = session.get(ADF, adf_id)
         if not adf:
@@ -374,12 +385,19 @@ def actualizar_adf(adf_id: int, datos: dict) -> int:
         for campo, valor in datos.items():
             if campo in campos_permitidos:
                 setattr(adf, campo, valor)
-        # Al corregir un rechazo, vuelve a borrador hasta que el creador lo reenvíe.
-        adf.estado = "Borrador"
-        adf.etapa = "Corrección posterior a rechazo"
-        adf.comentario_validacion = ""
-        adf.fecha_aprobacion_supervisor = None
-        adf.fecha_aprobacion_jefe = None
+        if conservar_devolucion_jefatura:
+            # Jefatura ya rechazó y el Supervisor está corrigiendo el MISMO ADF.
+            # Se mantiene la devolución activa hasta que el Supervisor lo reenvíe.
+            adf.estado = "Devuelto por Jefatura"
+            adf.etapa = "Corrección Supervisor por observación de Jefatura"
+            adf.fecha_aprobacion_jefe = None
+        else:
+            # Rechazo del Supervisor al creador: vuelve a borrador y recorre el flujo completo.
+            adf.estado = "Borrador"
+            adf.etapa = "Corrección posterior a rechazo"
+            adf.comentario_validacion = ""
+            adf.fecha_aprobacion_supervisor = None
+            adf.fecha_aprobacion_jefe = None
         adf.pdf_archivo = None
         session.commit()
         session.refresh(adf)

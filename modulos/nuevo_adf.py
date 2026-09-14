@@ -7,7 +7,7 @@ from database.conocimiento import buscar_casos_similares, formatear_contexto_cas
 from database.repositorio_adf import (
     guardar_adf, actualizar_adf, guardar_pdf_adf, obtener_adf, registrar_envio_validacion,
     guardar_borrador_adf, cargar_borrador_adf, actualizar_contenido_borrador,
-    buscar_borrador_coincidente,
+    buscar_borrador_coincidente, resolver_devolucion_jefatura,
 )
 from ia.cliente import (mensaje_amigable_ia,
     generar_cadenas_y_planes,
@@ -86,8 +86,90 @@ def inicializar() -> None:
         }
 
 
+def _json_campo(texto, defecto):
+    try:
+        valor = json.loads(texto or "")
+        return valor if valor is not None else defecto
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return defecto
+
+
+def _datos_edicion_desde_adf(adf, usuario: dict) -> dict:
+    """Reconstruye el análisis existente para editar el MISMO ADF sin perder contenido."""
+    snapshot = _json_campo(getattr(adf, "borrador_json", ""), {})
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    diagnostico = snapshot.get("diagnostico") or _json_campo(adf.analisis_ia, {})
+    ishikawa_validado = snapshot.get("ishikawa_validado") or _json_campo(adf.ishikawa, {})
+    ishikawa_ia = snapshot.get("ishikawa_ia")
+    if not ishikawa_ia and isinstance(ishikawa_validado, dict):
+        # Respaldo para ADF antiguos cuyo borrador no conservó la propuesta original de IA.
+        ishikawa_ia = {"resumen_tecnico": "Ishikawa recuperado desde el ADF guardado.", "advertencias": []}
+        for categoria, clave in CATEGORIAS.items():
+            ishikawa_ia[clave] = list(ishikawa_validado.get(categoria, []) or [])
+
+    causas = snapshot.get("causas_priorizadas") or _json_campo(adf.causas_priorizadas, [])
+    cadenas = snapshot.get("cadenas_causales") or _json_campo(adf.cadenas_causales, [])
+    planes = snapshot.get("plan_prevencion") or _json_campo(adf.plan_prevencion, [])
+
+    informe = snapshot.get("informe_final")
+    if not isinstance(informe, dict) or not informe:
+        informe = {
+            "titulo": f"ADF · {adf.equipo or 'Equipo'}",
+            "resumen_ejecutivo": adf.conclusion or adf.efecto or "",
+            "descripcion_evento": adf.relato_original or "",
+            "principio_funcionamiento": adf.investigacion_web or "",
+            "fenomeno_investigado": adf.efecto or "",
+            "sintesis_ishikawa": "Análisis Ishikawa recuperado desde el registro existente.",
+            "conclusion_tecnica": adf.conclusion or "",
+            "leccion_aprendida": adf.leccion_aprendida or "",
+        }
+
+    base = {
+        "paso": 1,
+        "centro": adf.centro or str(usuario.get("centro", "")).strip(),
+        "planta": adf.planta or str(usuario.get("planta", "")).strip(),
+        "area": adf.area or "",
+        "numero_equipo": adf.numero_equipo or "",
+        "equipo": adf.equipo or "",
+        "aviso_sap": adf.aviso_sap or "",
+        "tiempo_perdido_h": float(getattr(adf, "tiempo_perdido_h", 0) or 0),
+        "relato_original": adf.relato_original or "",
+        "casos_similares": snapshot.get("casos_similares", []),
+        "antecedentes_reincidencia": snapshot.get("antecedentes_reincidencia", []),
+        "diagnostico": diagnostico,
+        "efecto": adf.efecto or snapshot.get("efecto", ""),
+        "principio_funcionamiento": adf.investigacion_web or snapshot.get("principio_funcionamiento", ""),
+        "ishikawa_ia": ishikawa_ia,
+        "ishikawa_validado": ishikawa_validado,
+        "causas_priorizadas": causas,
+        "profundizacion": snapshot.get("profundizacion"),
+        "cadenas_causales": cadenas,
+        "plan_prevencion": planes,
+        "informe_final": informe,
+        "_revision_etapas": snapshot.get("_revision_etapas", {}),
+        "_informe_desactualizado": bool(snapshot.get("_informe_desactualizado", False)),
+        # Las imágenes históricas no siempre están disponibles como bytes en el snapshot.
+        # Se conservan las nuevas que el usuario adjunte durante la corrección.
+        "imagen_falla": None,
+        "imagen_equipo": None,
+        "imagen_componente": None,
+        "pdf_bytes": getattr(adf, "pdf_archivo", None),
+        "solicitudes_ia": int(snapshot.get("solicitudes_ia", 0) or 0),
+        "id_guardado": adf.id,
+        "id_edicion": adf.id,
+        "estado_validacion": adf.estado,
+        "comentario_rechazo": adf.comentario_validacion or "",
+        "_creado_por_original": adf.creado_por or "",
+        "_creado_por_email_original": adf.creado_por_email or "",
+        "_max_paso_alcanzado": 8,
+    }
+    return base
+
+
 def cargar_adf_para_correccion(adf_id: int) -> bool:
-    """Carga un ADF rechazado en el asistente para que su creador lo corrija y reenvíe."""
+    """Carga un ADF rechazado por Supervisor para que su creador lo corrija y reenvíe."""
     adf = obtener_adf(adf_id)
     usuario = st.session_state.get("usuario_actual") or {}
     if not adf:
@@ -98,40 +180,40 @@ def cargar_adf_para_correccion(adf_id: int) -> bool:
     if adf.estado not in {"Requiere corrección", "Rechazado"}:
         return False
 
-    st.session_state.nuevo_adf = {
-        "paso": 1,
-        "centro": adf.centro or str(usuario.get("centro", "")).strip(),
-        "planta": adf.planta or str(usuario.get("planta", "")).strip(),
-        "area": adf.area or "",
-        "numero_equipo": adf.numero_equipo or "",
-        "equipo": adf.equipo or "",
-        "aviso_sap": adf.aviso_sap or "",
-        "tiempo_perdido_h": float(getattr(adf, "tiempo_perdido_h", 0) or 0),
-        "relato_original": adf.relato_original or "",
-        "casos_similares": [],
-            "antecedentes_reincidencia": [],
-        "diagnostico": None,
-        "efecto": adf.efecto or "",
-        "principio_funcionamiento": adf.investigacion_web or "",
-        "ishikawa_ia": None,
-        "ishikawa_validado": {},
-        "causas_priorizadas": [],
-        "profundizacion": None,
-        "cadenas_causales": [],
-        "plan_prevencion": [],
-        "informe_final": None,
-            "_revision_etapas": {},
-            "_informe_desactualizado": False,
-        "imagen_falla": None,
-        "imagen_equipo": None,
-        "imagen_componente": None,
-        "pdf_bytes": None,
-        "solicitudes_ia": 0,
-        "id_guardado": adf.id,
-        "id_edicion": adf.id,
-        "estado_validacion": adf.estado,
-        "comentario_rechazo": adf.comentario_validacion or "",
-    }
+    datos = _datos_edicion_desde_adf(adf, usuario)
+    datos["paso"] = 1
+    st.session_state.nuevo_adf = datos
+    st.session_state.pagina = "📝 RootMine · Nuevo ADF"
+    return True
+
+
+def cargar_adf_devuelto_jefatura_para_correccion(adf_id: int) -> bool:
+    """Abre un ADF devuelto por Jefatura para corrección directa del Supervisor.
+
+    Conserva ID, creador, validaciones previas y observación de Jefatura. El ADF no
+    vuelve a pasar por una segunda aprobación de Supervisor: tras corregir se reenvía
+    directamente a Jefatura.
+    """
+    adf = obtener_adf(adf_id)
+    usuario = st.session_state.get("usuario_actual") or {}
+    if not adf or adf.estado != "Devuelto por Jefatura":
+        return False
+
+    correo = (usuario.get("correo") or "").lower().strip()
+    centro_usuario = str(usuario.get("centro", "") or "").strip()
+    es_supervisor_asignado = correo == (adf.supervisor_email or "").lower().strip()
+    es_admin_mismo_centro = bool(usuario.get("es_admin", False)) and centro_usuario == str(adf.centro or "").strip()
+    if not (es_supervisor_asignado or es_admin_mismo_centro):
+        return False
+
+    datos = _datos_edicion_desde_adf(adf, usuario)
+    # Abrimos en PDF / envío para que el Supervisor pueda saltar a cualquier etapa anterior.
+    datos["paso"] = 8
+    datos["_correccion_jefatura"] = True
+    datos["_editor_correccion_email"] = correo
+    datos["_observacion_jefatura"] = adf.comentario_validacion or ""
+    datos["estado_validacion"] = "Devuelto por Jefatura"
+    st.session_state.nuevo_adf = datos
     st.session_state.pagina = "📝 RootMine · Nuevo ADF"
     return True
 
@@ -1313,8 +1395,12 @@ def paso_informe() -> None:
         }
         datos["informe_final"] = informe_editado
         payload_adf = {
-            "creado_por": st.session_state.usuario,
-            "creado_por_email": (st.session_state.get("usuario_actual") or {}).get("correo", ""),
+            "creado_por": (datos.get("_creado_por_original") if datos.get("_correccion_jefatura") else st.session_state.usuario),
+            "creado_por_email": (
+                datos.get("_creado_por_email_original")
+                if datos.get("_correccion_jefatura")
+                else (st.session_state.get("usuario_actual") or {}).get("correo", "")
+            ),
             "estado": "Borrador",
             "etapa": "Informe PDF",
             "centro": datos["centro"],
@@ -1337,7 +1423,11 @@ def paso_informe() -> None:
             "leccion_aprendida": leccion.strip(),
         }
         if datos.get("id_edicion"):
-            adf_id = actualizar_adf(int(datos["id_edicion"]), payload_adf)
+            adf_id = actualizar_adf(
+                int(datos["id_edicion"]),
+                payload_adf,
+                conservar_devolucion_jefatura=bool(datos.get("_correccion_jefatura")),
+            )
         elif datos.get("id_guardado"):
             adf_id = actualizar_contenido_borrador(int(datos["id_guardado"]), payload_adf)
         else:
@@ -1345,7 +1435,7 @@ def paso_informe() -> None:
         datos["id_guardado"] = adf_id
         pdf_datos = {
             **informe_editado,
-            "creado_por": st.session_state.usuario,
+            "creado_por": (datos.get("_creado_por_original") if datos.get("_correccion_jefatura") else st.session_state.usuario),
             "centro": datos["centro"],
             "planta": datos.get("planta", ""),
             "area": datos["area"],
@@ -1370,22 +1460,31 @@ def paso_informe() -> None:
 
 
 def paso_pdf() -> None:
-    encabezado(
-        "Informe preparado para validación",
-        "El ADF está guardado. Puedes enviarlo al flujo Supervisor → Jefe con notificaciones internas y trazabilidad de cada decisión.",
-    )
     datos = st.session_state.nuevo_adf
+    es_correccion_jefatura = bool(datos.get("_correccion_jefatura"))
+    encabezado(
+        "ADF corregido · revisión de Jefatura" if es_correccion_jefatura else "Informe preparado para validación",
+        (
+            "Puedes revisar el PDF, volver a cualquier etapa para corregir y reenviar el mismo ADF directamente a Jefatura."
+            if es_correccion_jefatura
+            else "El ADF está guardado. Puedes enviarlo al flujo Supervisor → Jefe con notificaciones internas y trazabilidad de cada decisión."
+        ),
+    )
     adf = obtener_adf(datos["id_guardado"])
     st.success(f"ADF #{datos['id_guardado']} guardado correctamente.")
     nombre = f"ADF_{datos['equipo'].replace(' ', '_')}_{datos['id_guardado']}.pdf"
-    st.download_button(
-        "📄 Revisar / descargar PDF",
-        data=datos["pdf_bytes"],
-        file_name=nombre,
-        mime="application/pdf",
-        use_container_width=True,
-        type="primary",
-    )
+    pdf_actual = datos.get("pdf_bytes") or (getattr(adf, "pdf_archivo", None) if adf else None)
+    if pdf_actual:
+        st.download_button(
+            "📄 Revisar / descargar PDF",
+            data=pdf_actual,
+            file_name=nombre,
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary",
+        )
+    else:
+        st.info("El PDF se regenerará cuando guardes nuevamente el informe técnico.")
 
     supervisor = resolver_supervisor(datos["centro"], datos["area"])
     jefe = resolver_jefe(datos["centro"], datos["area"])
@@ -1393,6 +1492,42 @@ def paso_pdf() -> None:
         st.subheader("Flujo de aprobación")
         st.write(f"**Supervisor:** {supervisor['nombre']} · {supervisor['correo']}" if supervisor else "**Supervisor:** No encontrado para esta área")
         st.write(f"**Jefe:** {jefe['nombre']} · {jefe['correo']}" if jefe else "**Jefe:** No encontrado para esta área")
+
+        if es_correccion_jefatura and adf and adf.estado == "Devuelto por Jefatura":
+            st.warning("↩️ **ADF devuelto por Jefatura**")
+            st.write(f"**Observación de Jefatura:** {datos.get('_observacion_jefatura') or adf.comentario_validacion or 'Sin comentario registrado'}")
+            st.caption(
+                "El ADF conserva su mismo ID y toda la trazabilidad. Al terminar la corrección se reenviará "
+                "directamente a Jefatura; no requiere una nueva autoaprobación del Supervisor."
+            )
+            nota = st.text_area(
+                "Comentario de la corrección (opcional)",
+                key=f"nota_correccion_jef_{adf.id}",
+                placeholder="Ej.: Se incorporó información explícita de la falla del cableado y se ajustó la conclusión técnica.",
+            )
+            c_editar, c_reenviar = st.columns(2)
+            with c_editar:
+                if st.button("✏️ Volver a editar", key=f"editar_dev_jef_{adf.id}", use_container_width=True):
+                    avanzar(7)
+            with c_reenviar:
+                if st.button(
+                    "✅ REENVIAR A JEFATURA",
+                    key=f"reenviar_corregido_jef_{adf.id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    usuario = st.session_state.get("usuario_actual") or {}
+                    comentario = nota.strip() or "ADF corregido por Supervisor según observación de Jefatura."
+                    try:
+                        resolver_devolucion_jefatura(adf.id, usuario, "reenviar_jefe", comentario)
+                        datos["estado_validacion"] = "Pendiente Jefe"
+                        datos["_correccion_jefatura"] = False
+                        st.success("ADF corregido y reenviado a Jefatura. La trazabilidad quedó registrada.")
+                        avanzar(9)
+                    except Exception as error:
+                        st.error(str(error))
+            return
+
         st.caption("Al enviar, el ADF pasa a Pendiente Supervisor. Si se aprueba, avanza automáticamente a Pendiente Jefe.")
 
         if not supervisor:
@@ -1438,7 +1573,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.5.0 · análisis completado",
+        "RootMine v4.5.1 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1484,7 +1619,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.5.0 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.5.1 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
