@@ -63,6 +63,7 @@ def inicializar() -> None:
             "relato_original": "",
             "casos_similares": [],
             "antecedentes_reincidencia": [],
+            "antecedentes_tecnicos_causales": [],
             "diagnostico": None,
             "efecto": "",
             "principio_funcionamiento": "",
@@ -138,6 +139,7 @@ def _datos_edicion_desde_adf(adf, usuario: dict) -> dict:
         "relato_original": adf.relato_original or "",
         "casos_similares": snapshot.get("casos_similares", []),
         "antecedentes_reincidencia": snapshot.get("antecedentes_reincidencia", []),
+        "antecedentes_tecnicos_causales": snapshot.get("antecedentes_tecnicos_causales", []),
         "diagnostico": diagnostico,
         "efecto": adf.efecto or snapshot.get("efecto", ""),
         "principio_funcionamiento": adf.investigacion_web or snapshot.get("principio_funcionamiento", ""),
@@ -361,6 +363,7 @@ def _contexto_vivo(datos: dict) -> str:
         "principio_funcionamiento_validado": datos.get("principio_funcionamiento", ""),
         "ishikawa_validado": datos.get("ishikawa_validado", {}),
         "causas_priorizadas": datos.get("causas_priorizadas", []),
+        "antecedentes_tecnicos_de_ediciones_previas": datos.get("antecedentes_tecnicos_causales", []),
         "cadenas_causales_validadas": datos.get("cadenas_causales", []),
         "planes_validados": datos.get("plan_prevencion", []),
     }, ensure_ascii=False, indent=2)
@@ -455,6 +458,70 @@ def _cadenas_modelo_a_validadas(profundizacion: dict) -> list[dict]:
     return salida
 
 
+def _extraer_aportes_humanos_cadenas(datos: dict) -> list[dict]:
+    """Rescata solo aportes que difieren de la propuesta IA vigente antes de invalidar una cadena."""
+    validadas = list(datos.get("cadenas_causales") or [])
+    modelo = (datos.get("profundizacion") or {}).get("cadenas", []) or []
+    base_por_causa = {str(c.get("causa", "")): c for c in modelo if isinstance(c, dict)}
+    aportes = []
+    for cadena in validadas:
+        causa = str(cadena.get("causa", "")).strip()
+        base = base_por_causa.get(causa, {})
+        niveles_base = list(base.get("niveles", []) or [])
+        cambios = []
+        for idx, nivel in enumerate(cadena.get("niveles", []) or []):
+            b = niveles_base[idx] if idx < len(niveles_base) else {}
+            campos = {
+                "pregunta": (nivel.get("pregunta") or "").strip(),
+                "respuesta": (nivel.get("respuesta") or "").strip(),
+                "justificacion": (nivel.get("justificacion") or "").strip(),
+                "evidencia": (nivel.get("evidencia") or "").strip(),
+            }
+            base_campos = {
+                "pregunta": (b.get("pregunta") or "").strip(),
+                "respuesta": (b.get("respuesta_sugerida") or "").strip(),
+                "justificacion": (b.get("justificacion_tecnica") or "").strip(),
+                "evidencia": (b.get("evidencia_requerida") or "").strip(),
+            }
+            editados = {k: v for k, v in campos.items() if v and v != base_campos.get(k, "")}
+            if editados:
+                cambios.append({"nivel": nivel.get("nivel", idx + 1), **editados})
+        raiz = (cadena.get("causa_raiz_preliminar") or "").strip()
+        raiz_base = (base.get("causa_raiz_preliminar") or "").strip()
+        if cambios or (raiz and raiz != raiz_base):
+            item = {"causa_anterior": causa, "aportes_niveles": cambios}
+            if raiz and raiz != raiz_base:
+                item["causa_raiz_anotada"] = raiz
+            aportes.append(item)
+    return aportes
+
+
+def _preservar_aportes_antes_de_cambiar_causas(datos: dict, causas_nuevas: list[str]) -> bool:
+    """Guarda conocimiento humano útil y deja obsoletas cadenas/planes si cambió la selección causal."""
+    causas_anteriores = list(datos.get("causas_priorizadas") or [])
+    if not _cambio_real(causas_anteriores, list(causas_nuevas)):
+        return False
+    aportes = _extraer_aportes_humanos_cadenas(datos)
+    if aportes:
+        historial = list(datos.get("antecedentes_tecnicos_causales") or [])
+        historial.append({
+            "causas_anteriores": causas_anteriores,
+            "causas_nuevas": list(causas_nuevas),
+            "aportes_del_investigador": aportes,
+        })
+        # Evita que un ADF con muchas correcciones infle indefinidamente el contexto enviado a IA.
+        datos["antecedentes_tecnicos_causales"] = historial[-5:]
+    # La cadena y los planes anteriores ya no pertenecen al análisis vigente.
+    datos["cadenas_causales"] = []
+    datos["plan_prevencion"] = []
+    datos["profundizacion"] = None
+    _limpiar_widgets((
+        "preg_", "resp_", "just_", "evid_", "raiz_", "cantidad_niveles_",
+        "accion_", "obj_", "rel_", "resp_plan_", "fecha_plan_", "evid_plan_",
+    ))
+    return True
+
+
 def _auto_refrescar_ishikawa(datos: dict) -> None:
     revision = datos.setdefault("_revision_etapas", {})
     if revision.get("3") != "Requiere actualización":
@@ -492,8 +559,13 @@ def _auto_refrescar_cadenas(datos: dict) -> None:
                 principio_funcionamiento=datos["principio_funcionamiento"],
                 causas_seleccionadas=causas,
                 contexto_validado=(
-                    "RECALCULO AUTOMÁTICO. Usa únicamente la última versión guardada por el investigador. "
-                    "Alinea cada pregunta con la respuesta anterior y evita saltos lógicos.\n" + _contexto_vivo(datos)
+                    "RECALCULO AUTOMÁTICO POR CAMBIO DE CAUSAS. Las cadenas anteriores ya no son válidas y debes "
+                    "construir los 5 Porqués desde cero para las causas priorizadas ACTUALES. Los antecedentes técnicos "
+                    "de ediciones previas son solo conocimiento de terreno: reutilízalos únicamente si siguen siendo "
+                    "coherentes con la nueva línea causal; no copies una cadena vieja ni fuerces información irrelevante. "
+                    "Si un aporte humano conserva lógica técnica, intégralo en respuestas o justificaciones nuevas sin "
+                    "cambiar su significado. Alinea cada pregunta con la respuesta anterior y evita saltos lógicos. "
+                    "Genera también planes completamente coherentes con la nueva causa raíz.\n" + _contexto_vivo(datos)
                 ),
             )
         datos["profundizacion"] = resultado.model_dump()
@@ -1047,7 +1119,7 @@ def paso_ishikawa() -> None:
 def paso_priorizacion() -> None:
     encabezado(
         "Causas probables a profundizar",
-        "La tercera llamada generará todos los 5 Porqués y planes preventivos en conjunto.",
+        "Si cambias las causas, GearBot reconstruirá los 5 Porqués y planes para la nueva línea causal, conservando solo aportes técnicos humanos que sigan siendo pertinentes.",
     )
     datos = st.session_state.nuevo_adf
     indicador_consumo()
@@ -1069,7 +1141,7 @@ def paso_priorizacion() -> None:
         )
         destino_seguro, viajar_seguro = _navegacion_retroceso_form(4)
     if volver or viajar_seguro:
-        if _cambio_real(datos.get("causas_priorizadas", []), priorizadas):
+        if _preservar_aportes_antes_de_cambiar_causas(datos, list(priorizadas)):
             datos["causas_priorizadas"] = list(priorizadas)
             _marcar_cambio_desde(4)
         avanzar(destino_seguro if viajar_seguro else 3)
@@ -1078,16 +1150,16 @@ def paso_priorizacion() -> None:
         if not priorizadas:
             st.error("Selecciona al menos una causa probable.")
             return
-        if _cambio_real(datos.get("causas_priorizadas", []), priorizadas):
-            datos["causas_priorizadas"] = list(priorizadas)
+        causas_cambiaron = _preservar_aportes_antes_de_cambiar_causas(datos, list(priorizadas))
+        datos["causas_priorizadas"] = list(priorizadas)
+        if causas_cambiaron:
             _marcar_cambio_desde(4)
-        else:
-            datos["causas_priorizadas"] = list(priorizadas)
         contexto = (
-            f"Equipo: {descripcion_equipo_para_redaccion(datos['equipo'])}\n"
-            f"Relato: {datos['relato_original']}\n"
-            f"Fenómeno: {datos['efecto']}\n"
-            f"Hechos: {json.dumps(datos['diagnostico']['hechos_confirmados'], ensure_ascii=False)}"
+            "NUEVA LÍNEA CAUSAL. Construye los 5 Porqués desde cero para las causas priorizadas actuales. "
+            "No mantengas cadenas ni planes anteriores solo por continuidad. Los antecedentes técnicos de ediciones "
+            "previas pueden reutilizarse únicamente cuando sean compatibles con las nuevas causas y hechos del evento. "
+            "Conserva el sentido técnico aportado por el investigador y úsalo para enriquecer respuestas/justificaciones "
+            "si corresponde. Los planes deben responder a la nueva causa raíz, no a la versión anterior.\n" + _contexto_vivo(datos)
         )
         try:
             with st.spinner("GearBot está desarrollando las cadenas causales y planes preventivos..."):
@@ -1098,6 +1170,9 @@ def paso_priorizacion() -> None:
                     contexto_validado=contexto,
                 )
             datos["profundizacion"] = resultado.model_dump()
+            # La nueva propuesta reemplaza por completo la cadena/planes de la línea causal anterior.
+            datos["cadenas_causales"] = []
+            datos["plan_prevencion"] = []
             datos.setdefault("_revision_etapas", {})["5"] = "Actualizado por GearBot"
             datos.setdefault("_revision_etapas", {})["6"] = "Requiere actualización"
             datos["solicitudes_ia"] = max(3, int(datos.get("solicitudes_ia", 0)) + 1)
@@ -1573,7 +1648,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.5.1 · análisis completado",
+        "RootMine v4.5.2 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1619,7 +1694,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.5.1 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.5.2 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
