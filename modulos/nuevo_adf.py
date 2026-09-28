@@ -1648,7 +1648,7 @@ def paso_pdf() -> None:
 def paso_final() -> None:
     datos = st.session_state.nuevo_adf
     encabezado(
-        "RootMine v4.5.2 · análisis completado",
+        "RootMine v4.5.3 · análisis completado",
         "El análisis quedó guardado y disponible para la memoria técnica.",
     )
     st.write(f"**Centro (Planta):** {datos['centro']} - {datos.get('planta','')}")
@@ -1694,7 +1694,7 @@ def mostrar_nuevo_adf() -> None:
                 "RootMine lo devolvió automáticamente a PDF / envío para que puedas completar el flujo."
             )
     st.markdown(
-        f'<div class="step-chip">RootMine v4.5.2 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
+        f'<div class="step-chip">RootMine v4.5.3 · Etapa {paso} de {TOTAL_ETAPAS}</div>',
         unsafe_allow_html=True,
     )
     st.progress(paso / TOTAL_ETAPAS)
