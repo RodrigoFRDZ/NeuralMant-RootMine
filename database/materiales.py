@@ -8,7 +8,8 @@ from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.exc import StaleDataError
 from database.conexion import engine
-from database.modelos import SolicitudMaterial, NotificacionInterna, UsuarioRootMine
+from database.modelos import NotificacionInterna, UsuarioRootMine
+from database.modelos_materiales import SolicitudMaterial
 from database.usuarios import _a_dict, _areas_responsabilidad, _norm
 
 PERFILES = ("Contrapedido", "Stock de seguridad", "Pronóstico")

@@ -76,6 +76,7 @@ engine = _crear_engine()
 
 def crear_tablas() -> None:
     from database.modelos import Base
+    from database.modelos_materiales import SolicitudMaterial  # registra el modelo antes de create_all
     Base.metadata.create_all(engine)
     # Nuevas solicitudes se acceden solo desde el servidor RootMine.
     # RLS deniega acceso por la Data API; DATABASE_URL debe usar el rol servidor.
