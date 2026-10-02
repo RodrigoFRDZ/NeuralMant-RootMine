@@ -271,15 +271,19 @@ def mostrar_inicio() -> None:
                 )
     with right:
         st.markdown("### Módulos NeuralMant")
-        st.markdown('''<div class="module-stack">
-          <div class="module-item active"><b>RootMine</b><span>Análisis inteligente de causa raíz</span></div>
-          <div class="module-item"><b>Predict</b><span>Mantenimiento predictivo · Próximamente</span></div>
-          <div class="module-item active"><b>Gestión de Materiales</b><span>Stock de seguridad · MRP · Criticidad</span></div>
-          <div class="module-item"><b>Planner</b><span>Estrategias y planes · Próximamente</span></div>
-        </div>''', unsafe_allow_html=True)
+        if st.button("🧠 RootMine →", key="modulo_rootmine", type="primary", use_container_width=True):
+            st.session_state.pagina = "📝 RootMine · Nuevo ADF"
+            st.rerun()
+        st.caption("Análisis inteligente de causa raíz")
 
-    if st.button("Abrir Gestión de Materiales →", key="dash_materiales", type="primary"):
-        st.session_state.pagina = "📦 Gestión de Materiales"
-        st.rerun()
+        if st.button("📦 Gestión de Materiales →", key="modulo_materiales", type="primary", use_container_width=True):
+            st.session_state.pagina = "📦 Gestión de Materiales"
+            st.rerun()
+        st.caption("Stock de seguridad · MRP · Criticidad")
+
+        st.button("📈 Predict · Próximamente", key="modulo_predict", disabled=True, use_container_width=True)
+        st.caption("Mantenimiento predictivo")
+        st.button("📋 Planner · Próximamente", key="modulo_planner", disabled=True, use_container_width=True)
+        st.caption("Estrategias y planes")
 
     st.info("Las sugerencias de GearBot son una guía de investigación. La validación final siempre corresponde al equipo técnico.")
