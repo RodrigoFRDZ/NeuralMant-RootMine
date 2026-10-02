@@ -17,7 +17,7 @@ ROLES_TECNICOS = {
     "tecnico", "senior", "programador_mantenimiento",
     "ingeniero_confiabilidad", "ingeniero_procesos",
 }
-ROLES_VALIDADORES = {"supervisor", "jefe", "ingeniero", "subgerente"}
+ROLES_VALIDADORES = {"supervisor", "jefe", "ingeniero", "subgerente", "analizador_materiales"}
 
 ETIQUETAS_ROL = {
     "tecnico": "Técnico",
@@ -29,6 +29,7 @@ ETIQUETAS_ROL = {
     "jefe": "Jefe",
     "ingeniero": "Ingeniero de Mantenimiento",
     "subgerente": "Subgerente",
+    "analizador_materiales": "Analizador de Materiales",
 }
 
 

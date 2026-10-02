@@ -77,6 +77,11 @@ engine = _crear_engine()
 def crear_tablas() -> None:
     from database.modelos import Base
     Base.metadata.create_all(engine)
+    # Nuevas solicitudes se acceden solo desde el servidor RootMine.
+    # RLS deniega acceso por la Data API; DATABASE_URL debe usar el rol servidor.
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conexion:
+            conexion.execute(text("ALTER TABLE solicitud_material ENABLE ROW LEVEL SECURITY"))
 
     inspector = inspect(engine)
 

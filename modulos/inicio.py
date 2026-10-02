@@ -274,8 +274,12 @@ def mostrar_inicio() -> None:
         st.markdown('''<div class="module-stack">
           <div class="module-item active"><b>RootMine</b><span>Análisis inteligente de causa raíz</span></div>
           <div class="module-item"><b>Predict</b><span>Mantenimiento predictivo · Próximamente</span></div>
-          <div class="module-item"><b>StockMind</b><span>Optimización de repuestos · Próximamente</span></div>
+          <div class="module-item active"><b>Gestión de Materiales</b><span>Stock de seguridad · MRP · Criticidad</span></div>
           <div class="module-item"><b>Planner</b><span>Estrategias y planes · Próximamente</span></div>
         </div>''', unsafe_allow_html=True)
+
+    if st.button("Abrir Gestión de Materiales →", key="dash_materiales", type="primary"):
+        st.session_state.pagina = "📦 Gestión de Materiales"
+        st.rerun()
 
     st.info("Las sugerencias de GearBot son una guía de investigación. La validación final siempre corresponde al equipo técnico.")

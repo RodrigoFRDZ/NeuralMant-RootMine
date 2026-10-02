@@ -19,6 +19,7 @@ from modulos.nuevo_adf import mostrar_nuevo_adf, cargar_borrador_para_continuar
 from modulos.validaciones import mostrar_validaciones
 from modulos.notificaciones import mostrar_campana
 from modulos.administracion import mostrar_administracion
+from modulos.materiales import mostrar_materiales
 
 st.set_page_config(
     page_title="NeuralMant · RootMine",
@@ -266,6 +267,9 @@ def cerrar_sesion_rootmine() -> None:
     for clave in claves_sesion:
         st.session_state.pop(clave, None)
 
+    for clave in list(st.session_state):
+        if str(clave).startswith(("mat_", "eval_", "accion_", "guia_independiente_")):
+            st.session_state.pop(clave, None)
     st.session_state.pagina = "🏠 Dashboard"
 
 
@@ -403,7 +407,7 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.5.3 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.6.0 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -423,7 +427,7 @@ def mostrar_menu() -> str:
 
         mostrar_campana(usuario)
 
-        opciones = ["🏠 Dashboard", "📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
+        opciones = ["🏠 Dashboard", "📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📦 Gestión de Materiales", "🧠 Base de conocimiento"]
         if es_admin_rootmine(usuario):
             opciones.append("👥 Administración de cuentas")
         opciones.append("ℹ️ Acerca de")
@@ -442,7 +446,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.5.3 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.0 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -465,6 +469,7 @@ def main() -> None:
     elif pagina == "📋 Planes de acción": mostrar_planes_accion()
     elif pagina == "📚 Historial": mostrar_historial()
     elif pagina == "📊 Indicadores": mostrar_indicadores()
+    elif pagina == "📦 Gestión de Materiales": mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
     elif pagina == "👥 Administración de cuentas": mostrar_administracion()
     else: mostrar_acerca()
