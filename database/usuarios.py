@@ -229,11 +229,13 @@ def _areas_responsabilidad(usuario: dict) -> set[str]:
     return {_norm(x) for x in area.split("/") if x.strip()}
 
 
-def _resolver_responsable(centro: str, area: str, rol: str) -> dict | None:
+def _resolver_responsable(centro: str, area: str, rol: str, usuarios: list[dict] | None = None) -> dict | None:
     centro_objetivo = str(centro or "").strip()
     area_objetivo = _norm(area)
     candidatos = []
-    for usuario in cargar_usuarios():
+    for usuario in (cargar_usuarios() if usuarios is None else usuarios):
+        if not usuario.get("activo", True):
+            continue
         if usuario.get("rol", "").lower() != rol.lower():
             continue
         if str(usuario.get("centro", "")).strip() != centro_objetivo:

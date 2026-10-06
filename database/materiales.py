@@ -10,7 +10,10 @@ from sqlalchemy.orm.exc import StaleDataError
 from database.conexion import engine
 from database.modelos import NotificacionInterna, UsuarioRootMine
 from database.modelos_materiales import SolicitudMaterial
-from database.usuarios import _a_dict, _areas_responsabilidad, _norm
+from database.usuarios import _a_dict, _areas_responsabilidad, _norm, _resolver_responsable
+
+ANALISTA_FIJO = "rfernandezc@agrosuper.com"
+SUBGERENTE_FIJO = "cvelasquez@agrosuper.com"
 
 PERFILES = ("Contrapedido", "Stock de seguridad", "Pronóstico")
 PENDIENTE_MRP = "Pendiente exportación MRP"
@@ -153,13 +156,16 @@ def guardar(correo, tipo, d, responsables, enviar=False, solicitud_id=None, vers
                 centro=str(d.get("centro", "")), area=d.get("area", ""), material=d.get("material", ""),
                 estado="Borrador", historial_json="[]")
             s.add(r)
-        if enviar and tipo == "Stock de seguridad":
-            for etapa in ("jefe", "analista", "subgerente"):
-                elegido = _usuario(s, responsables.get(etapa, ""))
-                if not elegible(elegido, etapa, d["centro"], d["area"]):
-                    raise ValueError(f"Responsable {etapa} inválido para el centro/área.")
-            if len(set(responsables.values())) != 3:
-                raise ValueError("Selecciona responsables distintos para las tres etapas.")
+        if tipo == "Stock de seguridad":
+            usuarios = [_a_dict(reg) for reg in s.scalars(select(UsuarioRootMine).where(UsuarioRootMine.activo.is_(True)))]
+            responsables = responsables_stock(usuarios, d.get("centro", ""), d.get("area", ""))
+            if enviar:
+                if not responsables["jefe"]:
+                    raise ValueError("No hay jefe responsable para este centro y área en el maestro ADF. Puedes guardar un borrador y revisar la asignación.")
+                for etapa in ("analista", "subgerente"):
+                    elegido = _usuario(s, responsables[etapa])
+                    if not elegible(elegido, etapa, d["centro"], d["area"]):
+                        raise ValueError(f"Revisa la cuenta fija de {etapa} en el maestro ADF.")
         if enviar:
             duplicada = s.scalar(select(SolicitudMaterial.id).where(
                 SolicitudMaterial.centro == str(d["centro"]), SolicitudMaterial.material == d["material"],
@@ -193,11 +199,29 @@ def guardar(correo, tipo, d, responsables, enviar=False, solicitud_id=None, vers
         return r.id
 
 
+def responsables_stock(usuarios, centro, area):
+    jefe = _resolver_responsable(centro, area, "jefe", usuarios=usuarios)
+    return {"jefe": jefe["correo"] if jefe else "", "analista": ANALISTA_FIJO, "subgerente": SUBGERENTE_FIJO}
+
+
+def es_reemplazo_jefe(r, u):
+    return (r["tipo"] == "Stock de seguridad" and r["estado"] == "Pendiente jefe"
+            and u.get("correo") == ANALISTA_FIJO and bool(u.get("es_admin"))
+            and str(u.get("centro", "")) == str(r["centro"])
+            and u.get("correo") != r["jefe_email"])
+
+
 def puede_actuar(r, u):
     if r["tipo"] == "MRP":
         return False
     if r["estado"] == "Pendiente carga SAP":
         return bool(u.get("es_admin"))
+    if es_reemplazo_jefe(r, u):
+        return True
+    if r["estado"] == "Pendiente análisis" and (u.get("correo") != ANALISTA_FIJO or r["analista_email"] != ANALISTA_FIJO):
+        return False
+    if r["estado"] == "Pendiente subgerente" and (u.get("correo") != SUBGERENTE_FIJO or r["subgerente_email"] != SUBGERENTE_FIJO):
+        return False
     campo = {"Pendiente jefe": "jefe_email", "Pendiente análisis": "analista_email",
              "Pendiente subgerente": "subgerente_email", "Pendiente carga SAP": "analista_email"}.get(r["estado"])
     if not campo:
@@ -215,6 +239,10 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             raise ValueError("No eres el responsable de la etapa actual.")
         if r.version != version:
             raise ValueError("La solicitud cambió. Actualiza antes de continuar.")
+        if es_reemplazo_jefe(_dict(r), u):
+            if not comentario.strip():
+                raise ValueError("Indica el motivo de ausencia del jefe para validar como reemplazo.")
+            comentario = f"Validación como reemplazo del jefe {r.jefe_email} por ausencia. {comentario.strip()}"
         d = json.loads(r.datos_json)
         _validar(d, r.tipo)
         previo = r.estado
@@ -394,3 +422,37 @@ def recuperar_lote_mrp(correo, lote):
             raise ValueError("Lote no encontrado.")
         exp = filas[0]["datos"]["exportacion"]
         return _exportacion_datos(filas, lote, exp["fecha"], exp["administrador"])
+
+
+def sincronizar_flujo_stock(correo):
+    """Actualiza solicitudes abiertas al maestro ADF; conserva cierres y aprobaciones pasadas."""
+    with Session(engine) as s:
+        u = _usuario(s, correo)
+        if not u.get("es_admin"):
+            raise ValueError("Solo administración puede actualizar las asignaciones del flujo.")
+        usuarios = [_a_dict(reg) for reg in s.scalars(select(UsuarioRootMine).where(UsuarioRootMine.activo.is_(True)))]
+        filas = s.scalars(select(SolicitudMaterial).where(
+            SolicitudMaterial.tipo == "Stock de seguridad",
+            SolicitudMaterial.estado.in_(("Borrador", "Devuelta", "Pendiente jefe", "Pendiente análisis", "Pendiente subgerente", "Pendiente carga SAP"))
+        ).order_by(SolicitudMaterial.id).with_for_update()).all()
+        for r in filas:
+            ruta = responsables_stock(usuarios, r.centro, r.area)
+            cambios = []
+            for etapa in ("jefe", "analista", "subgerente"):
+                if etapa == "jefe" and (r.estado not in ("Borrador", "Devuelta", "Pendiente jefe") or not ruta[etapa]):
+                    continue
+                campo = etapa + "_email"
+                anterior = getattr(r, campo)
+                if anterior != ruta[etapa]:
+                    setattr(r, campo, ruta[etapa])
+                    cambios.append(f"{etapa}: {anterior or 'sin asignación'} → {ruta[etapa]}")
+            if cambios:
+                _log(r, u, "Responsables actualizados", "; ".join(cambios))
+                destino = {"Pendiente jefe": r.jefe_email, "Pendiente análisis": r.analista_email,
+                           "Pendiente subgerente": r.subgerente_email}.get(r.estado)
+                if destino:
+                    _aviso(s, destino, r, f"Solicitud #{r.id}: revisa la etapa {r.estado}. Responsables actualizados según maestro ADF.")
+        try:
+            s.commit()
+        except StaleDataError:
+            raise ValueError("Las solicitudes cambiaron. Actualiza la vista.") from None

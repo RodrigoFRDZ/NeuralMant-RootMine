@@ -11,7 +11,9 @@ import streamlit as st
 from database.usuarios import cargar_usuarios, cargar_centros
 from database.materiales import (PERFILES, ESTADOS, candidatos, criticidad, impacto,
                                 guardar, listar, decidir, puede_actuar, mrp_pendiente, exportar_mrp, recuperar_lote_mrp,
-                                PENDIENTE_MRP, LISTO_MRP, LISTO_SS)
+                                PENDIENTE_MRP, LISTO_MRP, LISTO_SS, responsables_stock, es_reemplazo_jefe, sincronizar_flujo_stock)
+from modulos.nuevo_adf import AREAS
+from database.usuarios import _norm
 from ia.cliente import _generar, mensaje_amigable_ia
 from pydantic import BaseModel, Field
 
@@ -98,17 +100,6 @@ def _guia(prefijo, datos=None):
     return c, {**respuestas, "contexto": contexto}
 
 
-def _responsable(usuarios, etapa, centro, area, previo, key):
-    opciones = candidatos(usuarios, etapa, centro, area)
-    correos = [""] + [u["correo"] for u in opciones]
-    nombres = {u["correo"]: f"{u['nombre']} · {u['correo']}" for u in opciones}
-    recomendado = previo if previo in correos else (correos[1] if len(correos) == 2 else "")
-    if etapa == "analista" and "rfernandezc@agrosuper.com" in correos and not previo:
-        recomendado = "rfernandezc@agrosuper.com"
-    return st.selectbox({"jefe": "Jefe de área", "analista": "Analizador de materiales", "subgerente": "Subgerente de Mantenimiento"}[etapa],
-        correos, index=correos.index(recomendado), format_func=lambda c: nombres.get(c, "Seleccionar responsable"), key=key)
-
-
 def _formulario(tipo, u, registros):
     pref = "mat_ss_" if tipo == "Stock de seguridad" else "mat_mrp_"
     borradores = [r for r in registros if r["tipo"] == tipo and r["solicitante_email"] == u["correo"] and r["estado"] in ("Borrador", "Devuelta")]
@@ -133,7 +124,11 @@ def _formulario(tipo, u, registros):
         centro_def = d.get("centro", u.get("centro", ""))
         centro = st.selectbox("Centro *", centro_op, index=centro_op.index(centro_def) if centro_def in centro_op else 0, key=pref+"centro")
     with c3:
-        area = st.text_input("Área *", value=d.get("area", u.get("area", "")), key=pref+"area").strip()
+        anterior_area = d.get("area", u.get("area", ""))
+        opciones_area = list(AREAS)
+        indice = next((i for i,x in enumerate(opciones_area) if _norm(x)==_norm(anterior_area)), None)
+        area = st.selectbox("Área *", opciones_area, index=indice,
+                            placeholder="Selecciona el área", key=pref+"area") or ""
         almacen = st.text_input("Almacén", value=d.get("almacen", ""), key=pref+"almacen").strip()
     equipo = st.text_input("Equipos donde se utiliza", value=d.get("equipos", ""), key=pref+"equipos")
     perfil = mercado = ""
@@ -185,11 +180,16 @@ def _formulario(tipo, u, registros):
                 st.session_state[just_key] = propuesta["justificacion"]
         justificacion = st.text_area("Justificación de la necesidad *", height=150, key=just_key)
         respaldo = st.text_area("Referencias de respaldo", value=d.get("respaldo", ""), placeholder="ADF, OT, aviso SAP o enlace a evidencia", key=pref+"respaldo")
-        st.write("**Responsables del flujo**")
+        st.write("**Responsables asignados automáticamente**")
         usuarios = cargar_usuarios()
-        resp = {}
-        for etapa in ("jefe", "analista", "subgerente"):
-            resp[etapa] = _responsable(usuarios, etapa, centro, area, r.get(etapa+"_email", "") if r else "", pref+etapa)
+        resp = responsables_stock(usuarios, centro, area)
+        nombres = {x["correo"]: x["nombre"] for x in usuarios}
+        if resp["jefe"]:
+            st.info(f"Jefe de {area}: {nombres.get(resp['jefe'], resp['jefe'])}")
+        else:
+            st.warning("Selecciona un área con jefe asignado en el maestro ADF. Sin esa asignación puedes guardar un borrador.")
+        st.caption(f"Análisis: {nombres.get(resp['analista'], resp['analista'])} · Subgerente: {nombres.get(resp['subgerente'], resp['subgerente'])}")
+        st.caption("Rodrigo Fernández puede reemplazar al jefe de su centro por ausencia. La aprobación del subgerente es obligatoria y queda pendiente hasta que pueda revisarla.")
     datos = dict(material=material, descripcion=descripcion, unidad=unidad, centro=centro, area=area,
         almacen=almacen, equipos=equipo, perfil=perfil, mercado=mercado, lead_time=int(lead_time),
         cantidad=cantidad, criticidad=clase, razon_criticidad=razon_crit, guia=respuestas,
@@ -286,6 +286,8 @@ def _detalle(r, u):
                 for h,nxt in zip(hist, hist[1:])], hide_index=True, use_container_width=True)
     st.download_button("Descargar expediente JSON", json.dumps(r, default=str, ensure_ascii=False, indent=2),
         file_name=f"Solicitud_materiales_{r['id']}.json", mime="application/json", key=f"desc_{r['id']}")
+    if r["tipo"] == "Stock de seguridad" and r["estado"] == "Pendiente subgerente":
+        st.info("Esperando la aprobación del subgerente. Esta etapa no admite reemplazo.")
     if not puede_actuar(r,u): return
     st.write("**Acciones de la etapa actual**")
     a = _evaluacion(r) if r["estado"] == "Pendiente análisis" else None
@@ -298,7 +300,12 @@ def _detalle(r, u):
         ref = st.text_input("Referencia o enlace de evidencia SAP *", key=pref+"ref")
         confirmado = st.checkbox("La configuración cargada coincide con la aprobada", key=pref+"conf")
         c = {"fecha": datetime.combine(fecha, hora, tzinfo=ZoneInfo("America/Santiago")).astimezone(ZoneInfo("UTC")).replace(tzinfo=None).isoformat(), "referencia": ref}
-    comentario = st.text_area("Comentario o motivo de rechazo/devolución", key=pref+"comentario")
+    reemplazo = es_reemplazo_jefe(r,u)
+    confirmo_ausencia = True
+    if reemplazo:
+        st.warning("Vas a validar en reemplazo del jefe. La decisión quedará registrada con tu nombre y el motivo de ausencia.")
+        confirmo_ausencia = st.checkbox("Confirmo que el jefe está ausente y actúo como reemplazo", key=pref+"ausencia")
+    comentario = st.text_area("Motivo de ausencia del jefe y comentario *" if reemplazo else "Comentario o motivo de rechazo/devolución", key=pref+"comentario")
     principal = "Validar análisis" if a is not None else "Marcar stock listo" if c is not None else "Aprobar"
     cols = st.columns(3)
     seleccion = None
@@ -307,6 +314,8 @@ def _detalle(r, u):
             seleccion = accion
     if seleccion:
         try:
+            if reemplazo and not confirmo_ausencia:
+                raise ValueError("Confirma la ausencia del jefe antes de actuar como reemplazo.")
             if seleccion == "Marcar stock listo" and not confirmado:
                 raise ValueError("Debes confirmar que la carga coincide con la configuración aprobada.")
             decidir(u["correo"], r["id"], r["version"], seleccion, comentario, analisis=a, carga=c)
@@ -407,20 +416,35 @@ def mostrar_materiales():
     if not u.get("correo"):
         st.error("Debes iniciar sesión.")
         return
+    if u.get("es_admin"):
+        try:
+            sincronizar_flujo_stock(u["correo"])
+        except ValueError as exc:
+            st.warning(str(exc))
     st.title("Gestión de Materiales")
     st.caption("Elige qué necesitas gestionar")
     if st.session_state.get("mat_flash"):
         st.success(st.session_state.pop("mat_flash"))
     if "mat_vista" not in st.session_state:
         st.session_state["mat_vista"] = "Stock de seguridad"
+    st.markdown("""<style>
+    .mat-nav-title {min-height: 42px; display: flex; align-items: center;
+        font-weight: 650; line-height: 1.35; margin-bottom: 8px;}
+    .mat-nav-description {min-height: 64px; margin: 0; line-height: 1.5;
+        font-size: .875rem; color: #a5adb7;}
+    @media (max-width: 900px) {
+        .mat-nav-title {min-height: 64px;}
+        .mat-nav-description {min-height: 88px;}
+    }
+    </style>""", unsafe_allow_html=True)
     ventanas = [("Stock de seguridad", "Solicita cobertura y conserva el flujo de aprobación.", "📦"),
                 ("Incorporación al MRP", "Registra materiales para la descarga de administración.", "📋"),
                 ("Guía de criticidad", "Evalúa el material con ayuda de GearBot.", "🤖"),
                 ("Seguimiento y aprobaciones", "Busca solicitudes, revisa avances y confirma stock.", "🔎")]
     for col, (nombre, descripcion, icono) in zip(st.columns(4), ventanas):
         with col, st.container(border=True):
-            st.markdown(f"**{icono} {nombre}**")
-            st.caption(descripcion)
+            st.markdown(f'<div class="mat-nav-title">{icono}&nbsp; {nombre}</div>'
+                        f'<p class="mat-nav-description">{descripcion}</p>', unsafe_allow_html=True)
             if st.button("Abrir", key="mat_ventana_"+nombre, use_container_width=True,
                          type="primary" if st.session_state["mat_vista"] == nombre else "secondary"):
                 st.session_state["mat_vista"] = nombre
