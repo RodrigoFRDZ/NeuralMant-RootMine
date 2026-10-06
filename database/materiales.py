@@ -13,7 +13,10 @@ from database.modelos_materiales import SolicitudMaterial
 from database.usuarios import _a_dict, _areas_responsabilidad, _norm
 
 PERFILES = ("Contrapedido", "Stock de seguridad", "Pronóstico")
-ESTADOS = ("Borrador", "Pendiente jefe", "Pendiente análisis", "Pendiente subgerente", "Pendiente carga SAP", "Cargado en SAP", "Devuelta", "Rechazada")
+PENDIENTE_MRP = "Pendiente exportación MRP"
+LISTO_MRP = "Listo · exportado MRP"
+LISTO_SS = "Listo · stock de seguridad"
+ESTADOS = ("Borrador", "Pendiente jefe", "Pendiente análisis", "Pendiente subgerente", "Pendiente carga SAP", "Cargado en SAP", "Devuelta", "Rechazada", PENDIENTE_MRP, LISTO_MRP, LISTO_SS)
 
 
 def criticidad(m_rotativo, smac, co, te, ma, estrategico):
@@ -92,7 +95,7 @@ def _validar(d, tipo, completo=True):
     if tipo not in ("Stock de seguridad", "MRP"):
         raise ValueError("Tipo de solicitud inválido.")
     if completo:
-        for k in ("material", "descripcion", "unidad", "centro", "area", "justificacion"):
+        for k in ("material", "descripcion", "unidad", "centro", "area") + (("justificacion",) if tipo == "Stock de seguridad" else ()):
             if not str(d.get(k, "")).strip():
                 raise ValueError(f"Debes completar {k}.")
         if d.get("criticidad") not in ("A", "B", "C", "Z", "M"):
@@ -150,31 +153,38 @@ def guardar(correo, tipo, d, responsables, enviar=False, solicitud_id=None, vers
                 centro=str(d.get("centro", "")), area=d.get("area", ""), material=d.get("material", ""),
                 estado="Borrador", historial_json="[]")
             s.add(r)
-        if enviar:
+        if enviar and tipo == "Stock de seguridad":
             for etapa in ("jefe", "analista", "subgerente"):
                 elegido = _usuario(s, responsables.get(etapa, ""))
                 if not elegible(elegido, etapa, d["centro"], d["area"]):
                     raise ValueError(f"Responsable {etapa} inválido para el centro/área.")
             if len(set(responsables.values())) != 3:
                 raise ValueError("Selecciona responsables distintos para las tres etapas.")
+        if enviar:
             duplicada = s.scalar(select(SolicitudMaterial.id).where(
-                SolicitudMaterial.centro == d["centro"], SolicitudMaterial.material == d["material"],
-                SolicitudMaterial.tipo == tipo, SolicitudMaterial.estado.in_(ESTADOS[1:5]),
+                SolicitudMaterial.centro == str(d["centro"]), SolicitudMaterial.material == d["material"],
+                SolicitudMaterial.tipo == tipo,
+                SolicitudMaterial.estado.in_(("Pendiente jefe", "Pendiente análisis", "Pendiente subgerente", "Pendiente carga SAP", PENDIENTE_MRP)),
                 SolicitudMaterial.id != (r.id or -1)))
             if duplicada:
                 raise ValueError(f"Ya existe la solicitud activa #{duplicada} para este material y centro.")
         r.centro = str(d.get("centro", "")); r.area = d.get("area", ""); r.material = d.get("material", "")
         # Cualquier reenvío invalida la evaluación y vuelve al jefe.
         r.datos_json = json.dumps(d, ensure_ascii=False)
-        r.jefe_email = responsables.get("jefe", ""); r.analista_email = responsables.get("analista", "")
-        r.subgerente_email = responsables.get("subgerente", "")
+        r.jefe_email = responsables.get("jefe", "") if tipo == "Stock de seguridad" else ""
+        r.analista_email = responsables.get("analista", "") if tipo == "Stock de seguridad" else ""
+        r.subgerente_email = responsables.get("subgerente", "") if tipo == "Stock de seguridad" else ""
+        if tipo == "MRP":
+            for campo in ("justificacion", "respaldo", "analisis"):
+                d.pop(campo, None)
+            r.datos_json = json.dumps(d, ensure_ascii=False)
         if enviar:
-            r.estado = "Pendiente jefe"
+            r.estado = PENDIENTE_MRP if tipo == "MRP" else "Pendiente jefe"
             if not r.fecha_envio:
                 r.fecha_envio = datetime.utcnow()
         s.flush()
         _log(r, u, "Enviada" if enviar else "Borrador guardado")
-        if enviar:
+        if enviar and tipo == "Stock de seguridad":
             _aviso(s, r.jefe_email, r, f"{r.solicitante_nombre} solicita {r.tipo}: {r.material}. Revisa Gestión de Materiales.")
         try:
             s.commit()
@@ -184,6 +194,10 @@ def guardar(correo, tipo, d, responsables, enviar=False, solicitud_id=None, vers
 
 
 def puede_actuar(r, u):
+    if r["tipo"] == "MRP":
+        return False
+    if r["estado"] == "Pendiente carga SAP":
+        return bool(u.get("es_admin"))
     campo = {"Pendiente jefe": "jefe_email", "Pendiente análisis": "analista_email",
              "Pendiente subgerente": "subgerente_email", "Pendiente carga SAP": "analista_email"}.get(r["estado"])
     if not campo:
@@ -229,7 +243,7 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             if not d.get("analisis"):
                 raise ValueError("Falta la evaluación de materiales.")
             r.estado = "Pendiente carga SAP"; destino = r.analista_email
-        elif accion == "Cargado en SAP" and previo == "Pendiente carga SAP":
+        elif accion in ("Cargado en SAP", "Marcar stock listo") and previo == "Pendiente carga SAP":
             c = dict(carga or {})
             if not c.get("referencia", "").strip() or not c.get("fecha"):
                 raise ValueError("Indica la fecha real y referencia/evidencia de carga en SAP.")
@@ -237,7 +251,7 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             if fecha < r.fecha_envio or fecha > datetime.utcnow():
                 raise ValueError("La fecha de carga debe estar entre el envío y el momento actual.")
             c["configuracion_aprobada"] = d.get("analisis", {})
-            d["carga"] = c; r.fecha_carga = fecha; r.estado = "Cargado en SAP"; destino = r.solicitante_email
+            d["carga"] = c; r.fecha_carga = fecha; r.estado = LISTO_SS; destino = r.solicitante_email
         else:
             raise ValueError("Acción inválida para la etapa actual.")
         r.datos_json = json.dumps(d, ensure_ascii=False)
@@ -253,3 +267,130 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             s.commit()
         except StaleDataError:
             raise ValueError("Otra persona actualizó la solicitud. Actualiza la pantalla.") from None
+
+
+def mrp_pendiente(r):
+    """También recoge MRP enviados antes del cambio de flujo, sin borrar solicitudes."""
+    return r["tipo"] == "MRP" and r["estado"] in (
+        PENDIENTE_MRP, "Pendiente jefe", "Pendiente análisis", "Pendiente subgerente", "Pendiente carga SAP")
+
+
+def _exportacion_datos(registros, lote, fecha, administrador):
+    from io import BytesIO
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Incorporacion MRP"
+    columnas = ["Solicitud", "Material", "Descripción", "Unidad", "Centro", "Área", "Almacén", "Equipos",
+                "Perfil MRP", "Mercado", "Lead time (días)", "Stock de seguridad solicitado", "Criticidad",
+                "Fundamento criticidad", "Solicitante", "Correo solicitante", "Fecha registro", "Lote exportación"]
+    ws.append(columnas)
+    for r in registros:
+        d = r["datos"]
+        valores = [r["id"], d.get("material", r["material"]), d.get("descripcion", ""), d.get("unidad", ""),
+                   r["centro"], r["area"], d.get("almacen", ""), d.get("equipos", ""), d.get("perfil", ""),
+                   d.get("mercado", ""), d.get("lead_time", ""), d.get("cantidad", 0), d.get("criticidad", ""),
+                   d.get("razon_criticidad", ""), r["solicitante_nombre"], r["solicitante_email"],
+                   str(r["fecha_envio"] or r["fecha_creacion"]), lote]
+        ws.append(valores)
+        # Texto literal: conserva ceros iniciales y evita ejecutar fórmulas de entrada.
+        for cell in ws[ws.max_row]:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+    for cell in ws[1]:
+        cell.fill = PatternFill("solid", fgColor="163247")
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(wrap_text=True)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    for idx in range(1, len(columnas)+1):
+        ws.column_dimensions[get_column_letter(idx)].width = 23 if idx not in (3,8,14) else 42
+    meta = wb.create_sheet("Registro exportación")
+    for row in [("Lote", lote), ("Fecha UTC", fecha), ("Administrador", administrador),
+                ("Materiales", len(registros)),
+                ("Estado", "Listo en RootMine por exportación; la carga efectiva en SAP se realiza externamente.")]:
+        meta.append(row)
+        for cell in meta[meta.max_row]:
+            if isinstance(cell.value, str): cell.data_type = "s"
+    meta.column_dimensions["A"].width = 24
+    meta.column_dimensions["B"].width = 100
+    contenido = BytesIO()
+    wb.save(contenido)
+    return contenido.getvalue()
+
+
+def exportar_mrp(correo, seleccion, lote):
+    """Genera el Excel al clic y cierra solo sus filas, en una transacción.
+
+    seleccion es una lista de (id, versión) de la vista presentada. Un lote es
+    idempotente: un reintento recupera su snapshot sin volver a cerrar filas.
+    No usa session_state: la descarga diferida corre en otro hilo.
+    """
+    if not seleccion or len({n for n, _ in seleccion}) != len(seleccion):
+        raise ValueError("No hay pendientes válidos para exportar.")
+    from uuid import UUID
+    UUID(lote)
+    with Session(engine) as s:
+        u = _usuario(s, correo)
+        if not u.get("es_admin"):
+            raise ValueError("Solo el administrador puede exportar los pendientes MRP.")
+        registros = []
+        for n, version in sorted(seleccion):
+            r = s.get(SolicitudMaterial, n, with_for_update=True)
+            if not r or r.tipo != "MRP":
+                raise ValueError("El lote contiene una solicitud inválida.")
+            registros.append((r, version))
+        recuperados = []
+        for r, _ in registros:
+            exp = json.loads(r.datos_json).get("exportacion", {})
+            if exp.get("lote") == lote:
+                snapshot = next((h["version_datos"] for h in reversed(json.loads(r.historial_json))
+                                 if h.get("accion") == "Exportado MRP" and h.get("version_datos", {}).get("exportacion", {}).get("lote") == lote), None)
+                if snapshot is None:
+                    raise ValueError("No se encontró el respaldo de este lote.")
+                recuperados.append(_dict(r) | {"datos": snapshot})
+        if recuperados:
+            if len(recuperados) != len(registros):
+                raise ValueError("El lote no coincide con el respaldo registrado.")
+            exp = recuperados[0]["datos"]["exportacion"]
+            return _exportacion_datos(recuperados, lote, exp["fecha"], exp["administrador"])
+        fecha = datetime.utcnow()
+        for r, version in registros:
+            if r.version != version or not mrp_pendiente(_dict(r)):
+                raise ValueError("Los pendientes cambiaron. Actualiza la vista antes de descargar.")
+            _validar(json.loads(r.datos_json), "MRP")
+        # Si falla la generación del Excel, no se marca ninguna solicitud.
+        excel = _exportacion_datos([_dict(r) for r, _ in registros], lote, fecha.isoformat(), correo)
+        for r, _ in registros:
+            d = json.loads(r.datos_json)
+            d["exportacion"] = {"lote": lote, "fecha": fecha.isoformat(), "administrador": correo}
+            r.datos_json = json.dumps(d, ensure_ascii=False)
+            r.estado = LISTO_MRP
+            # fecha_carga se reserva para una carga SAP efectiva, nunca para un Excel.
+            _log(r, u, "Exportado MRP", "Listo por exportación a Excel para incorporación al MRP.")
+            _aviso(s, r.solicitante_email, r, f"Material {r.material}: exportado por administración en el lote {lote}.")
+        try:
+            s.commit()
+        except StaleDataError:
+            raise ValueError("Los pendientes cambiaron. Actualiza la vista antes de descargar.") from None
+        return excel
+
+
+def recuperar_lote_mrp(correo, lote):
+    with Session(engine) as s:
+        u = _usuario(s, correo)
+        if not u.get("es_admin"):
+            raise ValueError("Solo el administrador puede recuperar un lote MRP.")
+        filas = []
+        for r in s.scalars(select(SolicitudMaterial).where(SolicitudMaterial.tipo == "MRP").order_by(SolicitudMaterial.id)):
+            for h in reversed(json.loads(r.historial_json)):
+                d = h.get("version_datos", {})
+                if h.get("accion") == "Exportado MRP" and d.get("exportacion", {}).get("lote") == lote:
+                    filas.append(_dict(r) | {"datos": d})
+                    break
+        if not filas:
+            raise ValueError("Lote no encontrado.")
+        exp = filas[0]["datos"]["exportacion"]
+        return _exportacion_datos(filas, lote, exp["fecha"], exp["administrador"])

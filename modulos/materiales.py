@@ -3,10 +3,15 @@ import json
 import math
 from datetime import datetime, date, time
 from zoneinfo import ZoneInfo
+from typing import Literal
+from uuid import uuid4
+from functools import partial
+import hashlib
 import streamlit as st
 from database.usuarios import cargar_usuarios, cargar_centros
 from database.materiales import (PERFILES, ESTADOS, candidatos, criticidad, impacto,
-                                guardar, listar, decidir, puede_actuar)
+                                guardar, listar, decidir, puede_actuar, mrp_pendiente, exportar_mrp, recuperar_lote_mrp,
+                                PENDIENTE_MRP, LISTO_MRP, LISTO_SS)
 from ia.cliente import _generar, mensaje_amigable_ia
 from pydantic import BaseModel, Field
 
@@ -16,18 +21,62 @@ class JustificacionMaterial(BaseModel):
     antecedentes_faltantes: list[str] = Field(default_factory=list)
 
 
+class OrientacionCriticidad(BaseModel):
+    smac: Literal[1, 2, 3] | None = None
+    co: Literal[1, 2, 3] | None = None
+    te: Literal[1, 2, 3] | None = None
+    ma: Literal[1, 2, 3] | None = None
+    m_rotativo: bool | None = None
+    estrategico: bool | None = None
+    fundamento: str
+    antecedentes_faltantes: list[str] = Field(default_factory=list)
+
+
 def _guia(prefijo, datos=None):
     d = datos or {}
-    st.caption("Guía basada en SV-DC-MAN-019 · revisión 27-05-2025. La clasificación requiere validación técnica.")
+    st.caption("Responde según el uso real del repuesto. Puedes pedir orientación a GearBot y revisar sus propuestas antes de aplicarlas.")
+    contexto = st.text_area("Contexto del material", value=d.get("contexto", ""),
+        placeholder="Qué material es y en qué equipo se usa; qué pasa si falla o no está disponible; riesgos, plazo de compra y sustitutos. Indica si es motor/bomba reparable de stock rotativo.",
+        height=120, key=prefijo+"contexto")
+    huella = hashlib.sha256(contexto.encode()).hexdigest()
+    if st.button("Ayudarme a evaluar la criticidad con IA", key=prefijo+"ia_criticidad"):
+        if not contexto.strip():
+            st.warning("Describe el material y sus condiciones para que GearBot pueda orientarte.")
+        else:
+            try:
+                with st.spinner("GearBot está revisando el contexto del material…"):
+                    res = _generar(
+                        "Ayuda al técnico, supervisor o programador a evaluar criticidad. Usa solo hechos del contexto; nunca supongas que falta de información significa ausencia de riesgo. "
+                        "Devuelve null para criterios desconocidos y pregunta por ellos. Criterios: smac 1 riesgo seguridad/medio ambiente/calidad, 2 incumple política interna, 3 sin riesgo; "
+                        "co 1 afecta directamente operación, 2 impacto menor, 3 no afecta; te 1 más de 90 días, 2 de 21 a 90 días, 3 menos de 21 días; "
+                        "ma 1 sin sustituto/solo fabricante, 2 sustituto validado fabricante, 3 sustituto validado empresa. m_rotativo solo si es motor o bomba reparable con stock rotativo. "
+                        "estrategico solo con evidencia de baja rotación y graves consecuencias. No apruebes ni inventes clasificaciones. Fundamenta cada propuesta y pide los antecedentes faltantes.",
+                        contexto, OrientacionCriticidad)
+                st.session_state[prefijo+"orientacion"] = {"huella": huella, "datos": res.model_dump()}
+            except Exception as exc:
+                st.warning(mensaje_amigable_ia(exc) or "No fue posible consultar GearBot. Puedes completar la guía manualmente.")
+    propuesta = st.session_state.get(prefijo+"orientacion", {})
+    if propuesta.get("huella") == huella:
+        ia = propuesta["datos"]
+        st.info(ia["fundamento"])
+        nombres = {"smac": "Seguridad, medio ambiente y calidad", "co": "Continuidad operacional", "te": "Tiempo de entrega", "ma": "Sustitución"}
+        st.dataframe([{"Criterio": nombres[k], "Respuesta propuesta": str(ia[k]) if ia[k] is not None else "Falta información"} for k in nombres], hide_index=True, use_container_width=True)
+        for pregunta in ia["antecedentes_faltantes"]:
+            st.write("• " + pregunta)
+        if st.button("Usar respuestas propuestas y revisar", key=prefijo+"usar_criticidad"):
+            for k in ("smac", "co", "te", "ma"):
+                if ia[k] is not None: st.session_state[prefijo+k] = ia[k]
+            for campo, sufijo in (("m_rotativo", "m"), ("estrategico", "z")):
+                if ia[campo] is not None: st.session_state[prefijo+sufijo] = ia[campo]
     m = st.checkbox("Es motor o bomba reparable con stock rotativo", value=bool(d.get("m_rotativo")), key=prefijo+"m")
     if m:
         st.info("Categoría M: control de reparación y retorno. No se incorpora al MRP.")
-        return "M", {"m_rotativo": True}
+        return "M", {"m_rotativo": True, "contexto": contexto}
     opciones = {
-        "smac": ["Riesgo para seguridad, medio ambiente o calidad", "Incumple política interna de Agrosuper", "Sin riesgo"],
+        "smac": ["Riesgo para seguridad, medio ambiente o calidad", "Incumple política interna", "Sin riesgo"],
         "co": ["Afecta directamente la operación", "Afecta menormente el proceso", "No afecta el proceso"],
         "te": ["Más de 90 días", "Entre 21 y 90 días", "Menos de 21 días"],
-        "ma": ["Sin sustituto; solo fabricante", "Sustituto validado por fabricante", "Sustituto validado por Agrosuper"],
+        "ma": ["Sin sustituto; solo fabricante", "Sustituto validado por fabricante", "Sustituto validado por la empresa"],
     }
     etiquetas = {"smac": "Seguridad, medio ambiente y calidad", "co": "Continuidad operacional",
                  "te": "Tiempo de entrega", "ma": "Sustitución del repuesto"}
@@ -35,12 +84,18 @@ def _guia(prefijo, datos=None):
     cols = st.columns(2)
     for i, (k, opciones_k) in enumerate(opciones.items()):
         with cols[i % 2]:
+            anterior = d.get(k)
             respuestas[k] = st.selectbox(etiquetas[k], [1, 2, 3],
-                index=int(d.get(k, 3))-1, format_func=lambda v, opts=opciones_k: opts[v-1], key=prefijo+k)
+                index=anterior-1 if anterior in (1,2,3) else None,
+                placeholder="Selecciona una respuesta", format_func=lambda v, opts=opciones_k: opts[v-1], key=prefijo+k)
     respuestas["estrategico"] = st.checkbox("Repuesto estratégico de baja rotación con graves consecuencias si falta", value=bool(d.get("estrategico")), key=prefijo+"z")
-    c = criticidad(**respuestas)
-    st.success(f"Clasificación sugerida por el árbol: {c}")
-    return c, respuestas
+    c = criticidad(**respuestas) if all(respuestas[k] is not None for k in opciones) else None
+    if c:
+        st.success(f"Criticidad sugerida: {c}")
+    else:
+        st.info("Completa los cuatro criterios para obtener una sugerencia de criticidad.")
+    st.caption("Guía basada en SV-DC-MAN-019 · revisión 27-05-2025. Revisa técnicamente las respuestas antes de asignar la criticidad.")
+    return c, {**respuestas, "contexto": contexto}
 
 
 def _responsable(usuarios, etapa, centro, area, previo, key):
@@ -65,6 +120,7 @@ def _formulario(tipo, u, registros):
     if r and r["estado"] == "Devuelta":
         st.warning("Solicitud devuelta. Corrige los antecedentes y vuelve a enviarla al jefe de área.")
         st.write(r["historial"][-1]["comentario"])
+    st.subheader("1. Identifica el material")
     c1, c2, c3 = st.columns(3)
     with c1:
         material = st.text_input("Código material *", value=d.get("material", ""), key=pref+"codigo").strip()
@@ -82,6 +138,7 @@ def _formulario(tipo, u, registros):
     equipo = st.text_input("Equipos donde se utiliza", value=d.get("equipos", ""), key=pref+"equipos")
     perfil = mercado = ""
     lead_time = 0
+    st.subheader("2. Configuración solicitada")
     if tipo == "MRP":
         a,b,c = st.columns(3)
         with a:
@@ -95,53 +152,57 @@ def _formulario(tipo, u, registros):
         sugerida, respuestas = _guia(pref+"guia_", d.get("guia", {}))
     clases = ["A", "B", "C", "Z"] if tipo == "MRP" else ["A", "B", "C", "Z", "M"]
     seleccion = d.get("criticidad", sugerida)
-    clase = st.selectbox("Criticidad propuesta *", clases, index=clases.index(seleccion) if seleccion in clases else 0, key=pref+"crit")
+    clase = st.selectbox("Criticidad propuesta *", clases, index=clases.index(seleccion) if seleccion in clases else None, placeholder="Selecciona una criticidad", key=pref+"crit")
     razon_crit = st.text_input("Fundamento de la criticidad", value=d.get("razon_criticidad", ""), key=pref+"razon")
     if respuestas["m_rotativo"]:
         if tipo == "MRP": st.error("Material M: no se permite enviar ni guardar una incorporación al MRP.")
         else: clase = "M"
-    just_key = pref+"justificacion"
-    st.session_state.setdefault(just_key, d.get("justificacion", ""))
-    if st.button("Complementar justificación con IA", key=pref+"ia"):
-        original = st.session_state[just_key]
-        if not original.strip():
-            st.warning("Escribe primero por qué necesitas el material.")
-        else:
-            try:
-                with st.spinner("GearBot está revisando los antecedentes…"):
-                    res = _generar("Redacta una justificación técnica para una solicitud de materiales. Usa únicamente los hechos entregados. No inventes fallas, costos, cantidades ni plazos. Identifica antecedentes faltantes como preguntas. No apruebes la solicitud.",
-                        json.dumps({"material": material, "descripcion": descripcion, "equipos": equipo, "tipo": tipo, "criticidad": clase, "relato": original}, ensure_ascii=False), JustificacionMaterial)
-                st.session_state[pref+"propuesta_ia"] = res.model_dump()
-            except Exception as exc:
-                st.warning(mensaje_amigable_ia(exc) or "No fue posible consultar GearBot. Puedes continuar manualmente.")
-    propuesta = st.session_state.get(pref+"propuesta_ia")
-    if propuesta:
-        st.write("**Propuesta de GearBot**")
-        st.write(propuesta["justificacion"])
-        for falta in propuesta["antecedentes_faltantes"]:
-            st.write("• "+falta)
-        if st.button("Usar propuesta y revisar", key=pref+"usar_ia"):
-            st.session_state[just_key] = propuesta["justificacion"]
-    justificacion = st.text_area("Justificación de la necesidad *", height=150, key=just_key)
-    respaldo = st.text_area("Referencias de respaldo", value=d.get("respaldo", ""), placeholder="ADF, OT, aviso SAP o enlace a evidencia", key=pref+"respaldo")
-    st.write("**Responsables del flujo**")
-    usuarios = cargar_usuarios()
+    justificacion = respaldo = ""
     resp = {}
-    for etapa in ("jefe", "analista", "subgerente"):
-        resp[etapa] = _responsable(usuarios, etapa, centro, area, r.get(etapa+"_email", "") if r else "", pref+etapa)
+    if tipo == "Stock de seguridad":
+        st.subheader("3. Justifica la cobertura necesaria")
+        just_key = pref+"justificacion"
+        st.session_state.setdefault(just_key, d.get("justificacion", ""))
+        if st.button("Complementar justificación con IA", key=pref+"ia"):
+            original = st.session_state[just_key]
+            if not original.strip():
+                st.warning("Escribe primero por qué necesitas el material.")
+            else:
+                try:
+                    with st.spinner("GearBot está revisando los antecedentes…"):
+                        res = _generar("Redacta una justificación técnica para una solicitud de materiales. Usa únicamente los hechos entregados. No inventes fallas, costos, cantidades ni plazos. Identifica antecedentes faltantes como preguntas. No apruebes la solicitud.",
+                            json.dumps({"material": material, "descripcion": descripcion, "equipos": equipo, "tipo": tipo, "criticidad": clase, "relato": original}, ensure_ascii=False), JustificacionMaterial)
+                    st.session_state[pref+"propuesta_ia"] = res.model_dump()
+                except Exception as exc:
+                    st.warning(mensaje_amigable_ia(exc) or "No fue posible consultar GearBot. Puedes continuar manualmente.")
+        propuesta = st.session_state.get(pref+"propuesta_ia")
+        if propuesta:
+            st.write("**Propuesta de GearBot**")
+            st.write(propuesta["justificacion"])
+            for falta in propuesta["antecedentes_faltantes"]:
+                st.write("• "+falta)
+            if st.button("Usar propuesta y revisar", key=pref+"usar_ia"):
+                st.session_state[just_key] = propuesta["justificacion"]
+        justificacion = st.text_area("Justificación de la necesidad *", height=150, key=just_key)
+        respaldo = st.text_area("Referencias de respaldo", value=d.get("respaldo", ""), placeholder="ADF, OT, aviso SAP o enlace a evidencia", key=pref+"respaldo")
+        st.write("**Responsables del flujo**")
+        usuarios = cargar_usuarios()
+        resp = {}
+        for etapa in ("jefe", "analista", "subgerente"):
+            resp[etapa] = _responsable(usuarios, etapa, centro, area, r.get(etapa+"_email", "") if r else "", pref+etapa)
     datos = dict(material=material, descripcion=descripcion, unidad=unidad, centro=centro, area=area,
         almacen=almacen, equipos=equipo, perfil=perfil, mercado=mercado, lead_time=int(lead_time),
         cantidad=cantidad, criticidad=clase, razon_criticidad=razon_crit, guia=respuestas,
         m_rotativo=respuestas["m_rotativo"], justificacion=justificacion, respaldo=respaldo)
     a,b = st.columns(2)
     draft = a.button("Guardar borrador", key=pref+"guardar", use_container_width=True)
-    enviar = b.button("Enviar al jefe de área", key=pref+"enviar", type="primary", use_container_width=True)
+    enviar = b.button("Guardar material para MRP" if tipo == "MRP" else "Enviar al jefe de área", key=pref+"enviar", type="primary", use_container_width=True)
     if draft or enviar:
         try:
             if tipo == "MRP" and perfil == "Stock de seguridad" and cantidad <= 0 and enviar:
                 raise ValueError("Indica una cantidad para el perfil de stock de seguridad.")
             n = guardar(u["correo"], tipo, datos, resp, enviar=enviar, solicitud_id=elegido or None, version=r["version"] if r else None)
-            st.session_state["mat_flash"] = f"Solicitud #{n} {'enviada' if enviar else 'guardada como borrador'}."
+            st.session_state["mat_flash"] = f"Solicitud #{n}: " + ("pendiente de exportación MRP." if enviar and tipo == "MRP" else "enviada al jefe de área." if enviar else "borrador guardado.")
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
@@ -193,8 +254,21 @@ def _detalle(r, u):
     st.caption(f"{r['solicitante_nombre']} · Centro {r['centro']} · {r['area']}")
     st.write(d.get("justificacion", ""))
     with st.expander("Antecedentes y evaluación aprobada"):
-        st.json(d)
-        st.write(f"Jefe: {r['jefe_email']} · Analizador: {r['analista_email']} · Subgerente: {r['subgerente_email']}")
+        st.dataframe([{"Dato": etiqueta, "Valor": str(d.get(k, "") or "Sin informar")} for k, etiqueta in (
+            ("equipos", "Equipos"), ("almacen", "Almacén"), ("criticidad", "Criticidad"),
+            ("razon_criticidad", "Fundamento criticidad"), ("cantidad", "Stock solicitado"),
+            ("perfil", "Perfil MRP"), ("mercado", "Mercado"), ("lead_time", "Plazo de entrega (días)"))], hide_index=True, use_container_width=True)
+        if r["tipo"] == "Stock de seguridad":
+            st.write("**Respaldo:**", d.get("respaldo") or "Sin referencias")
+            st.write(f"Jefe: {r['jefe_email']} · Analizador: {r['analista_email']} · Subgerente: {r['subgerente_email']}")
+        if d.get("analisis"):
+            st.write("**Evaluación:**", d["analisis"].get("fundamento", ""))
+            st.dataframe([{"Dato": k.replace("_", " ").capitalize(), "Valor": str(v)} for k,v in d["analisis"].items() if k != "impacto"], hide_index=True, use_container_width=True)
+        if d.get("exportacion"):
+            st.success("Listo: incluido en el Excel MRP descargado por administración.")
+            st.caption(f"Lote: {d['exportacion']['lote']} · Fecha UTC: {d['exportacion']['fecha']}")
+        if d.get("carga"):
+            st.write("**Confirmación de stock:**", d["carga"].get("referencia", ""))
     if r["fecha_envio"]:
         fin = r["fecha_carga"] or datetime.utcnow()
         horas = (fin-r["fecha_envio"]).total_seconds()/3600
@@ -225,7 +299,7 @@ def _detalle(r, u):
         confirmado = st.checkbox("La configuración cargada coincide con la aprobada", key=pref+"conf")
         c = {"fecha": datetime.combine(fecha, hora, tzinfo=ZoneInfo("America/Santiago")).astimezone(ZoneInfo("UTC")).replace(tzinfo=None).isoformat(), "referencia": ref}
     comentario = st.text_area("Comentario o motivo de rechazo/devolución", key=pref+"comentario")
-    principal = "Validar análisis" if a is not None else "Cargado en SAP" if c is not None else "Aprobar"
+    principal = "Validar análisis" if a is not None else "Marcar stock listo" if c is not None else "Aprobar"
     cols = st.columns(3)
     seleccion = None
     for col, accion in zip(cols, [principal, "Devolver", "Rechazar"]):
@@ -233,7 +307,7 @@ def _detalle(r, u):
             seleccion = accion
     if seleccion:
         try:
-            if seleccion == "Cargado en SAP" and not confirmado:
+            if seleccion == "Marcar stock listo" and not confirmado:
                 raise ValueError("Debes confirmar que la carga coincide con la configuración aprobada.")
             decidir(u["correo"], r["id"], r["version"], seleccion, comentario, analisis=a, carga=c)
             st.session_state["mat_flash"] = f"Solicitud #{r['id']}: {seleccion}."
@@ -242,44 +316,127 @@ def _detalle(r, u):
             st.error(str(exc))
 
 
+def _tabla_solicitudes(registros):
+    return [{"Folio": r["id"], "Tipo": r["tipo"], "Material": r["material"],
+             "Descripción": r["datos"].get("descripcion", ""), "Estado": r["estado"],
+             "Centro": r["centro"], "Área": r["area"], "Solicitante": r["solicitante_nombre"]} for r in registros]
+
+
+@st.fragment(run_every="4s")
+def _exportaciones(u):
+    registros = listar(u["correo"])
+    firma = tuple((r["id"], r["version"], r["estado"]) for r in registros)
+    previa = st.session_state.get("mat_exportaciones_estado")
+    st.session_state["mat_exportaciones_estado"] = firma
+    if previa is not None and previa != firma:
+        st.rerun(scope="app")
+    pendientes = [r for r in registros if mrp_pendiente(r)]
+    st.subheader("Descarga de materiales para MRP")
+    st.caption("Incluye todos los pendientes visibles para administración. Los filtros de búsqueda de abajo no recortan este lote.")
+    st.info("Al descargar, los materiales del Excel quedan listos por exportación. La incorporación efectiva en SAP se realiza con esa planilla.")
+    if pendientes:
+        st.dataframe(_tabla_solicitudes(pendientes), hide_index=True, use_container_width=True)
+        seleccion = tuple((r["id"], r["version"]) for r in pendientes)
+        huella = hashlib.sha256(repr(seleccion).encode()).hexdigest()[:20]
+        lote_key = "mat_lote_" + huella
+        st.session_state.setdefault(lote_key, str(uuid4()))
+        lote = st.session_state[lote_key]
+        # Generación diferida: valida el lote y actualiza la BD antes de servir el archivo.
+        st.download_button(f"Descargar {len(pendientes)} materiales pendientes · Excel",
+            data=partial(exportar_mrp, u["correo"], seleccion, lote),
+            file_name=f"MRP_pendientes_{lote}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="mat_exportar_"+huella, type="primary", use_container_width=True, on_click="ignore")
+    else:
+        st.success("No hay materiales pendientes de exportación MRP.")
+    lotes = {}
+    for r in registros:
+        exp = r["datos"].get("exportacion")
+        if exp:
+            lotes.setdefault(exp["lote"], {"fecha": exp["fecha"], "cantidad": 0})["cantidad"] += 1
+    if lotes:
+        with st.expander("Lotes ya descargados · recuperar una planilla"):
+            lote = st.selectbox("Lote", list(lotes),
+                format_func=lambda n: f"{lotes[n]['fecha'][:19]} UTC · {lotes[n]['cantidad']} materiales · {n[:8]}", key="mat_recuperar_lote")
+            st.download_button("Volver a descargar este lote", data=partial(recuperar_lote_mrp, u["correo"], lote),
+                file_name=f"MRP_lote_{lote}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="mat_recuperar_excel", on_click="ignore", use_container_width=True)
+
+
 def _seguimiento(u, registros):
-    total = len(registros)
-    pendientes = [r for r in registros if puede_actuar(r,u)]
-    cerradas = [r for r in registros if r["fecha_carga"] and r["fecha_envio"]]
+    pendientes_mrp = [r for r in registros if mrp_pendiente(r)]
+    listas_ss = [r for r in registros if r["tipo"] == "Stock de seguridad" and r["estado"] == "Pendiente carga SAP"]
+    listas = [r for r in registros if r["estado"] in (LISTO_MRP, LISTO_SS, "Cargado en SAP")]
     cols = st.columns(4)
-    cols[0].metric("Solicitudes visibles",total)
-    cols[1].metric("Pendientes de mi revisión",len(pendientes))
-    cols[2].metric("Cargadas en SAP",len(cerradas))
-    promedio = sum((r['fecha_carga']-r['fecha_envio']).total_seconds()/86400 for r in cerradas)/len(cerradas) if cerradas else None
-    cols[3].metric("Promedio envío a SAP",f"{promedio:.1f} días" if promedio is not None else "Sin cierres")
-    estado = st.selectbox("Filtrar estado", ["Todos", "Pendientes de mi revisión"]+list(ESTADOS), key="mat_filtro_estado")
-    tipo = st.selectbox("Filtrar tipo", ["Todos", "Stock de seguridad", "MRP"], key="mat_filtro_tipo")
-    busqueda = st.text_input("Buscar código o descripción", key="mat_buscar").strip().lower()
-    filtrados = [r for r in registros if (estado=="Todos" or r['estado']==estado or (estado=="Pendientes de mi revisión" and puede_actuar(r,u)))
-        and (tipo=="Todos" or r['tipo']==tipo) and (not busqueda or busqueda in (r['material']+' '+r['datos'].get('descripcion','')).lower())]
+    cols[0].metric("Solicitudes", len(registros))
+    cols[1].metric("MRP por descargar", len(pendientes_mrp))
+    cols[2].metric("Stock por confirmar", len(listas_ss))
+    cols[3].metric("Listas", len(listas))
+    if u.get("es_admin"):
+        _exportaciones(u)
+        st.divider()
+    st.subheader("Busca y revisa tus solicitudes")
+    a,b,c = st.columns([2,2,3])
+    tipo = a.selectbox("Tipo", ["Todos", "Stock de seguridad", "MRP"], key="mat_filtro_tipo")
+    situacion = b.selectbox("Situación", ["Pendientes", "Listas", "Todas", "Mi revisión", "Borradores"], key="mat_situacion")
+    busqueda = c.text_input("Buscar", placeholder="Folio, código, descripción, área o solicitante", key="mat_buscar").strip().lower()
+    estado = st.selectbox("Etapa específica (opcional)", ["Todas"] + sorted({r["estado"] for r in registros}), key="mat_filtro_estado")
+    filtrados = []
+    for r in registros:
+        lista = r["estado"] in (LISTO_MRP, LISTO_SS, "Cargado en SAP")
+        if tipo != "Todos" and r["tipo"] != tipo: continue
+        if situacion == "Pendientes" and r["estado"] in (LISTO_MRP, LISTO_SS, "Cargado en SAP", "Rechazada", "Borrador"): continue
+        if situacion == "Listas" and not lista: continue
+        if situacion == "Mi revisión" and not puede_actuar(r,u): continue
+        if situacion == "Borradores" and r["estado"] != "Borrador": continue
+        if estado != "Todas" and r["estado"] != estado: continue
+        texto = " ".join(str(v) for v in (r["id"], r["material"], r["datos"].get("descripcion", ""), r["area"], r["centro"], r["solicitante_nombre"], r["solicitante_email"]))
+        if busqueda and busqueda not in texto.lower(): continue
+        filtrados.append(r)
     if not filtrados:
-        st.info("No hay solicitudes para los filtros seleccionados."); return
-    st.dataframe([{"Folio":r['id'], "Tipo":r['tipo'], "Material":r['material'], "Descripción":r['datos'].get('descripcion',''),
-        "Estado":r['estado'], "Centro":r['centro'], "Área":r['area'], "Solicitante":r['solicitante_nombre']} for r in filtrados], hide_index=True, use_container_width=True)
-    n = st.selectbox("Abrir solicitud", [r['id'] for r in filtrados], key="mat_abrir")
-    _detalle(next(r for r in filtrados if r['id']==n),u)
+        st.info("No hay solicitudes para estos filtros.")
+        return
+    st.dataframe(_tabla_solicitudes(filtrados), hide_index=True, use_container_width=True)
+    n = st.selectbox("Abrir solicitud", [r["id"] for r in filtrados],
+        format_func=lambda n: next(f"#{n} · {r['material']} · {r['datos'].get('descripcion','')} · {r['estado']}" for r in filtrados if r["id"]==n), key="mat_abrir")
+    with st.container(border=True):
+        _detalle(next(r for r in filtrados if r["id"] == n), u)
 
 
 def mostrar_materiales():
     u = st.session_state.get("usuario_actual") or {}
-    if not u.get("correo"): st.error("Debes iniciar sesión."); return
+    if not u.get("correo"):
+        st.error("Debes iniciar sesión.")
+        return
     st.title("Gestión de Materiales")
-    st.caption("Stock de seguridad · Incorporación al MRP · Criticidad · Trazabilidad hasta SAP")
+    st.caption("Elige qué necesitas gestionar")
     if st.session_state.get("mat_flash"):
         st.success(st.session_state.pop("mat_flash"))
+    if "mat_vista" not in st.session_state:
+        st.session_state["mat_vista"] = "Stock de seguridad"
+    ventanas = [("Stock de seguridad", "Solicita cobertura y conserva el flujo de aprobación.", "📦"),
+                ("Incorporación al MRP", "Registra materiales para la descarga de administración.", "📋"),
+                ("Guía de criticidad", "Evalúa el material con ayuda de GearBot.", "🤖"),
+                ("Seguimiento y aprobaciones", "Busca solicitudes, revisa avances y confirma stock.", "🔎")]
+    for col, (nombre, descripcion, icono) in zip(st.columns(4), ventanas):
+        with col, st.container(border=True):
+            st.markdown(f"**{icono} {nombre}**")
+            st.caption(descripcion)
+            if st.button("Abrir", key="mat_ventana_"+nombre, use_container_width=True,
+                         type="primary" if st.session_state["mat_vista"] == nombre else "secondary"):
+                st.session_state["mat_vista"] = nombre
+                st.rerun()
+    st.divider()
+    vista = st.session_state["mat_vista"]
+    st.header(vista)
     registros = listar(u["correo"])
-    ss,mrp,guia,seguimiento = st.tabs(["Stock de seguridad", "Incorporación al MRP", "Guía de criticidad", "Seguimiento y aprobaciones"])
-    with ss: _formulario("Stock de seguridad",u,registros)
-    with mrp:
-        st.info("Perfiles: contrapedido, stock de seguridad y pronóstico. Las categorías M quedan excluidas del MRP.")
-        _formulario("MRP",u,registros)
-    with guia:
+    if vista == "Stock de seguridad":
+        _formulario("Stock de seguridad", u, registros)
+    elif vista == "Incorporación al MRP":
+        st.info("Guarda cada material que deba incorporarse al MRP. Quedará pendiente de descarga por administración, sin responsables de aprobación.")
+        _formulario("MRP", u, registros)
+    elif vista == "Guía de criticidad":
+        st.write("Describe el repuesto y revisa cómo afecta a tu operación. GearBot propone respuestas; tú revisas la clasificación.")
         _guia("guia_independiente_")
-        st.write("Z: estratégico de baja rotación. A: crítico para continuidad. B: impacto intermedio. C: bajo impacto o sustitución disponible. M: motores y bombas reparables de stock rotativo.")
-        st.caption("El texto del procedimiento incluye motores y bombas reparables en M; se recoge esa condición aunque el gráfico pregunte solo por motores.")
-    with seguimiento: _seguimiento(u,registros)
+        st.write("**Z:** estratégico de baja rotación · **A:** crítico para continuidad · **B:** impacto intermedio · **C:** bajo impacto o sustitución disponible · **M:** motores y bombas reparables de stock rotativo.")
+    else:
+        _seguimiento(u, registros)
