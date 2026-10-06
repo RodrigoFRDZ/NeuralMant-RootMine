@@ -17,7 +17,8 @@ from modulos.planes_accion import mostrar_planes_accion
 from modulos.inicio import mostrar_inicio
 from modulos.nuevo_adf import mostrar_nuevo_adf, cargar_borrador_para_continuar
 from modulos.validaciones import mostrar_validaciones
-from modulos.notificaciones import mostrar_campana
+from modulos.notificaciones import mostrar_campana, mostrar_aviso_materiales
+from modulos.navegacion_materiales import abrir_material_desde_url
 from modulos.administracion import mostrar_administracion
 from modulos.materiales import mostrar_materiales
 
@@ -407,7 +408,7 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.6.4 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.6.6 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -428,6 +429,8 @@ def mostrar_menu() -> str:
         mostrar_campana(usuario)
 
         opciones = ["🏠 Dashboard", "📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📦 Gestión de Materiales", "🧠 Base de conocimiento"]
+        if usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente"):
+            opciones.insert(opciones.index("📦 Gestión de Materiales")+1, "✅ Aprobaciones de materiales")
         if es_admin_rootmine(usuario):
             opciones.append("👥 Administración de cuentas")
         opciones.append("ℹ️ Acerca de")
@@ -446,7 +449,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.4 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.6 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -460,9 +463,11 @@ def main() -> None:
         return
 
     restaurar_contexto_navegacion()
+    abrir_material_desde_url()
     pagina = mostrar_menu()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
+    mostrar_aviso_materiales(st.session_state.usuario_actual)
     if pagina == "🏠 Dashboard": mostrar_inicio()
     elif pagina == "📝 RootMine · Nuevo ADF": mostrar_nuevo_adf()
     elif pagina == "✅ Validaciones": mostrar_validaciones()
@@ -470,6 +475,9 @@ def main() -> None:
     elif pagina == "📚 Historial": mostrar_historial()
     elif pagina == "📊 Indicadores": mostrar_indicadores()
     elif pagina == "📦 Gestión de Materiales": mostrar_materiales()
+    elif pagina == "✅ Aprobaciones de materiales":
+        st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
+        mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
     elif pagina == "👥 Administración de cuentas": mostrar_administracion()
     else: mostrar_acerca()

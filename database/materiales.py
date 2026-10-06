@@ -41,13 +41,41 @@ def impacto(d):
         if not v.is_finite() or v < 0:
             raise ValueError(f"{k}: debe ser un número no negativo.")
         return v
-    incremento = max(Decimal(0), n("ss_propuesto") - n("ss_actual")) * n("precio")
-    compra = max(Decimal(0), n("ss_propuesto") + n("reservas") - n("stock") - n("oc")) * n("precio")
+    ss = n("ss_propuesto")
+    precio = n("precio")
+    stock = n("stock")
+    consumo = n("consumo_mensual")
+    incremento = max(Decimal(0), ss - n("ss_actual")) * precio
+    compra = max(Decimal(0), ss + n("reservas") - stock - n("oc")) * precio
     bodega = n("valor_bodega")
+    total_ss = ss * precio
+    proyectada = bodega + compra
+    cobertura_ss = None
+    cobertura_stock = stock / consumo if consumo else None
+    promedio = n("stock_promedio") / consumo if consumo and d.get("stock_promedio_observado") else None
+    uso = n("uso_ss_cantidad") if d.get("uso_ss_registrado") else None
+    ss_referencia = n("ss_historico_referencia") if d.get("uso_ss_registrado") else Decimal(0)
+    periodo = n("periodo_consumo_meses")
+    consumo_periodo = consumo * periodo
+    consumo_emergencia = uso / periodo if uso is not None and periodo else None
+    cobertura_ss = ss / consumo_emergencia if consumo_emergencia else None
     return {"incremento_ss": float(incremento), "reposicion": float(compra),
             "porcentaje": float(incremento / bodega * 100) if bodega else None,
-            "bodega_proyectada": float(bodega + compra),
-            "porcentaje_reposicion": float(compra / bodega * 100) if bodega else None}
+            "bodega_proyectada": float(proyectada),
+            "porcentaje_reposicion": float(compra / bodega * 100) if bodega else None,
+            "valor_ss_total": float(total_ss), "valor_stock_material_actual": float(stock * precio),
+            "porcentaje_ss_total_bodega_actual": float(total_ss / bodega * 100) if bodega else None,
+            "porcentaje_ss_total_bodega_proyectada": float(total_ss / proyectada * 100) if proyectada else None,
+            "cobertura_ss_meses": float(cobertura_ss) if cobertura_ss is not None else None,
+            "cobertura_ss_dias": float(cobertura_ss * 30) if cobertura_ss is not None else None,
+            "cobertura_stock_meses": float(cobertura_stock) if cobertura_stock is not None else None,
+            "permanencia_promedio_meses": float(promedio) if promedio is not None else None,
+            "permanencia_promedio_dias": float(promedio * 30) if promedio is not None else None,
+            "uso_ss_cantidad": float(uso) if uso is not None else None,
+            "consumo_emergencia_ss_mensual": float(consumo_emergencia) if consumo_emergencia is not None else None,
+            "uso_ss_valorizado": float(uso * precio) if uso is not None else None,
+            "uso_ss_porcentaje_consumo_periodo": float(uso / consumo_periodo * 100) if uso is not None and consumo_periodo else None,
+            "uso_ss_reservas_equivalentes": float(uso / ss_referencia) if uso is not None and ss_referencia else None}
 
 
 def _usuario(s, correo):
@@ -119,7 +147,14 @@ def _validar(d, tipo, completo=True):
     if completo and tipo == "Stock de seguridad":
         if float(d.get("cantidad", 0)) <= 0:
             raise ValueError("La cantidad solicitada debe ser mayor a cero.")
-    for k in ("cantidad", "ss_actual", "ss_propuesto", "precio", "stock", "reservas", "oc", "valor_bodega"):
+    if completo and d.get("uso_ss_registrado"):
+        if not d.get("uso_ss_solo_emergencias"):
+            raise ValueError("Confirma que el uso de SS incluye solo emergencias por falla y excluye trabajos planificados.")
+        if float(d.get("periodo_consumo_meses",0)) <= 0:
+            raise ValueError("Indica el período del registro de emergencias.")
+        if float(d.get("uso_ss_cantidad",0)) > 0 and not str(d.get("uso_ss_respaldo", "")).strip():
+            raise ValueError("Indica el aviso, OT correctiva o respaldo de las salidas por emergencia.")
+    for k in ("cantidad", "ss_actual", "ss_propuesto", "precio", "stock", "reservas", "oc", "valor_bodega", "consumo_mensual", "stock_promedio", "desviacion", "lead_time_dias", "uso_ss_cantidad", "ss_historico_referencia", "periodo_consumo_meses"):
         if k in d and (not math.isfinite(float(d[k])) or float(d[k]) < 0):
             raise ValueError(f"Valor inválido para {k}.")
 
@@ -133,7 +168,7 @@ def _log(r, u, accion, comentario=""):
 
 
 def _aviso(s, correo, r, mensaje):
-    s.add(NotificacionInterna(destinatario_email=correo, adf_id=None, tipo="materiales",
+    s.add(NotificacionInterna(destinatario_email=correo, adf_id=None, tipo=f"materiales:{r.id}",
         titulo=f"Materiales #{r.id} · {r.estado}", mensaje=mensaje))
 
 
