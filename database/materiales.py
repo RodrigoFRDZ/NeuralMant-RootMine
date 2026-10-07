@@ -302,8 +302,10 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             a = dict(analisis or {})
             if a.get("validacion_simple"):
                 a.update(ss_propuesto=float(d.get("cantidad", 0)), criticidad=d["criticidad"], unidad=d.get("unidad", "unidades"))
-            if d.get("solicitud_valorada"):
-                a.update(precio=float(d["precio_unitario"]), moneda=d["moneda"],
+            if r.tipo == "Stock de seguridad":
+                if float(d.get("precio_unitario", 0)) <= 0:
+                    raise ValueError("Devuelve la solicitud para que el solicitante informe el precio unitario. La validación solo agrega el stock valorado de la bodega.")
+                a.update(precio=float(d["precio_unitario"]), moneda=d.get("moneda", "USD"),
                          ss_propuesto=float(d["cantidad"]), criticidad=d["criticidad"], unidad=d["unidad"])
             _validar({**d, **a}, r.tipo)
             if a.get("criticidad") == "M" and (r.tipo == "MRP" or d.get("perfil") in PERFILES):

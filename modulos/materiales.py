@@ -244,17 +244,21 @@ def _formulario(tipo, u, registros):
 
 
 def _impacto_solicitud(d):
-    if "precio_unitario" not in d:
-        st.caption("Esta solicitud anterior no incluye precio unitario; se completará en la validación económica.")
-        return
     cantidad = float(d.get("cantidad", 0))
-    precio = float(d.get("precio_unitario", 0))
-    moneda = d.get("moneda", "USD")
+    analisis = d.get("analisis") or {}
+    precio = float(d.get("precio_unitario", analisis.get("precio", 0)))
+    moneda = d.get("moneda", analisis.get("moneda", "USD"))
+    valor = cantidad * precio
+    bodega = float(analisis.get("valor_bodega", 0))
     x,y,z = st.columns(3)
     x.metric("Cantidad solicitada", f"{cantidad:g} {d.get('unidad', '')}")
-    y.metric("Precio unitario solicitado", f"{precio:,.2f} {moneda}")
-    z.metric("Impacto económico solicitado", f"{cantidad * precio:,.2f} {moneda}")
-    st.caption("Valor de la cantidad solicitada = cantidad × precio unitario. El porcentaje sobre la bodega se incorpora en la validación económica; la recepción física se confirma al completar el flujo.")
+    y.metric("Monto total de stock solicitado", f"{valor:,.2f} {moneda}" if precio > 0 else "Falta precio del solicitante")
+    z.metric("Impacto sobre bodega actual", f"{valor/bodega*100:.2f}%" if bodega > 0 and precio > 0 else "Pendiente de valorización")
+    origen = "Precio unitario del solicitante" if "precio_unitario" in d else "Precio unitario de la evaluación anterior"
+    st.caption(f"{origen}: {precio:,.2f} {moneda}. Monto = cantidad × precio. Porcentaje = monto ÷ valor actual de toda la bodega × 100. La recepción física se confirma al completar el flujo.")
+    if bodega <= 0:
+        st.caption("El porcentaje estará disponible cuando administración informe el stock valorado actual de la bodega.")
+
 
 
 def _resumen_valorizacion(a):
@@ -334,16 +338,13 @@ def _evaluacion(r, clave=""):
     pref = f"eval_{clave}_{r['id']}_{r['version']}_"
     st.markdown("**Validación económica**")
     st.caption(f"Cantidad solicitada: {a['ss_propuesto']:g} {a['unidad']} · Criticidad: {a['criticidad']}. Los antecedentes del solicitante se conservan.")
-    x,y = st.columns(2)
-    a["valor_bodega"] = x.number_input("Valor del stock total actual de la bodega", min_value=0.0,
+    a["valor_bodega"] = st.number_input("Valor del stock total actual de la bodega", min_value=0.0,
         value=float(a.get("valor_bodega", 0)), key=pref+"valor_bodega",
-        help="Valor de todos los materiales de la bodega, en la misma moneda que el precio unitario.")
-    a["precio"] = y.number_input("Precio unitario del material", min_value=0.0,
-        value=float(d.get("precio_unitario", a.get("precio", 0))), key=pref+"precio",
-        disabled=bool(d.get("solicitud_valorada")), help="Precio informado por el solicitante. Para corregirlo, devuelve la solicitud." if d.get("solicitud_valorada") else None)
-    if d.get("solicitud_valorada"):
-        a["precio"] = float(d["precio_unitario"])
-        a["moneda"] = d["moneda"]
+        help="Valor de todos los materiales de la bodega, en la misma moneda que la solicitud. No es la cantidad física de unidades.")
+    a["precio"] = float(d.get("precio_unitario", 0))
+    a["moneda"] = d.get("moneda", "USD")
+    if a["precio"] <= 0:
+        st.warning("Esta solicitud anterior no tiene precio unitario informado por el solicitante. Devuélvela para que complete ese dato; tu validación solo agrega el valor actual de la bodega.")
     a.setdefault("moneda", "USD")
     a["fecha_datos"] = date.today().isoformat()
     st.caption(f"Moneda de la valorización: {a['moneda']}. Ambos importes deben estar expresados en esta moneda.")

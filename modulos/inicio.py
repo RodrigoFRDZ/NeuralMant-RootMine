@@ -43,7 +43,7 @@ def _modulos_inicio(usuario):
     @media(max-width:900px) {.inicio-module {min-height:190px;}}
     </style>""", unsafe_allow_html=True)
     modulos = [
-        ("📝 Análisis de fallas", "Crea o continúa un ADF con el apoyo de GearBot.", "📝 RootMine · Nuevo ADF", "nuevo"),
+        ("📝 RootMine · Análisis de fallas", "Crea o continúa un ADF con el apoyo de GearBot.", "📝 RootMine · Nuevo ADF", "nuevo"),
         ("📦 Gestión de materiales", "Stock de seguridad, incorporación al MRP y guía de criticidad.", "📦 Gestión de Materiales", "materiales"),
         ("📋 Planes de acción", "Revisa compromisos, vencimientos y cierre de acciones.", "📋 Planes de acción", "planes"),
         ("📚 Historial", "Consulta los análisis y las conclusiones de tu equipo.", "📚 Historial", "hist"),
@@ -82,7 +82,7 @@ def mostrar_inicio() -> None:
 
     st.markdown(
         f'''<div class="suite-hero">
-            <div><div class="eyebrow">NEURALMANT SUITE · ROOTMINE</div>
+            <div><div class="eyebrow">NEURALMANT SUITE</div>
             <h1><span>¿En qué trabajaremos hoy?</span></h1>
             <p>Elige un módulo para comenzar o continuar tu trabajo.</p></div>
             <div class="suite-badge">TU ESPACIO DE TRABAJO</div>
@@ -188,7 +188,7 @@ def mostrar_inicio() -> None:
     if _es_admin_rootmine(usuario_actual):
         cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
         with cap_titulo:
-            st.markdown("#### 📡 Capacidad RootMine")
+            st.markdown("#### 📡 Capacidad NeuralMant")
         with cap_actualizar:
             if st.button("↻ Actualizar", key="refresh_capacidad", use_container_width=True):
                 dashboard_cache.clear(); uso_ia_cache.clear(); almacenamiento_cache.clear(); st.rerun()
@@ -204,12 +204,12 @@ def mostrar_inicio() -> None:
         cap1.metric(
             "GearBot · última hora",
             f"{uso_ia.get('ultima_hora', 0)} / {limite_h if limite_h else '—'}",
-            help="Consultas enviadas por RootMine durante los últimos 60 minutos.",
+            help="Consultas enviadas por NeuralMant durante los últimos 60 minutos.",
         )
         cap2.metric(
             "GearBot · hoy",
             f"{uso_ia.get('hoy', 0)} / {limite_d if limite_d else '—'}",
-            help="Consultas enviadas por RootMine durante el día actual (hora de Chile).",
+            help="Consultas enviadas por NeuralMant durante el día actual (hora de Chile).",
         )
 
         if almacenamiento.get("limite_bytes", 0):
@@ -220,7 +220,7 @@ def mostrar_inicio() -> None:
                 f"{libres_mb:.1f} MB libres",
                 delta=f"{usados_mb:.1f} MB usados",
                 delta_color="off",
-                help="Uso de la base PostgreSQL operacional de RootMine.",
+                help="Uso de la base PostgreSQL operacional de NeuralMant.",
             )
             st.progress(min(1.0, almacenamiento.get("porcentaje", 0) / 100.0))
             st.caption(
@@ -235,7 +235,7 @@ def mostrar_inicio() -> None:
                 "Para mostrar el porcentaje exacto de cuota de GearBot, configura "
                 "`GEMINI_HOURLY_LIMIT` y `GEMINI_DAILY_LIMIT` en Secrets con los "
                 "límites que muestra Google AI Studio para este proyecto/modelo. "
-                "RootMine ya está contando las consultas automáticamente."
+                "NeuralMant ya está contando las consultas automáticamente."
             )
         elif limite_h or limite_d:
             if limite_h:

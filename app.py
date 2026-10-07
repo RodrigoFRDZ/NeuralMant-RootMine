@@ -23,7 +23,7 @@ from modulos.administracion import mostrar_administracion
 from modulos.materiales import mostrar_materiales
 
 st.set_page_config(
-    page_title="NeuralMant · RootMine",
+    page_title="NeuralMant Suite",
     page_icon="assets/neuralmant_favicon.png",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -129,7 +129,7 @@ def marca_compacta() -> None:
             """,
             unsafe_allow_html=True,
         )
-        if st.button("ROOTMINE", key="brand_home", help="Volver al menú principal", use_container_width=True):
+        if st.button("NEURALMANT · Inicio", key="brand_home", help="Volver al menú principal", use_container_width=True):
             st.session_state.pagina = "🏠 Dashboard"
             st.session_state.pop("nuevo_adf", None)
             st.rerun()
@@ -144,12 +144,12 @@ def barra_inicio(pagina: str) -> None:
     etiqueta = etiqueta.lstrip("📝✅📚📊🧠🔐ℹ️ " ).strip()
     col_home, col_ruta = st.columns([0.22, 0.78], vertical_alignment="center")
     with col_home:
-        if st.button("🏠 ROOTMINE · Inicio", key="top_home_button", help="Volver al menú principal", use_container_width=True):
+        if st.button("🏠 NEURALMANT · Inicio", key="top_home_button", help="Volver al menú principal", use_container_width=True):
             st.session_state.pagina = "🏠 Dashboard"
             st.session_state.pop("nuevo_adf", None)
             st.rerun()
     with col_ruta:
-        st.markdown(f'<div class="rootmine-breadcrumb">ROOTMINE <span>›</span> {etiqueta}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="rootmine-breadcrumb">NEURALMANT <span>›</span> {etiqueta}</div>', unsafe_allow_html=True)
     st.markdown('<div class="rootmine-top-divider"></div>', unsafe_allow_html=True)
 
 def _token_sesion_actual() -> str:
@@ -330,14 +330,14 @@ def mostrar_identificacion() -> None:
         st.markdown(
             """
             <div class="rootmine-login-brand">
-              <div class="rootmine-login-name">ROOT<span>MINE</span></div>
-              <div class="rootmine-login-subtitle">Análisis Inteligente de Causa Raíz</div>
-              <div class="rootmine-login-copy">Conocimiento técnico, trazabilidad y validación en un solo flujo.</div>
+              <div class="rootmine-login-name">NEURAL<span>MANT</span></div>
+              <div class="rootmine-login-subtitle">Suite de gestión y conocimiento técnico</div>
+              <div class="rootmine-login-copy">Soy GearBot. Bienvenido a NeuralMant. Ingresa para elegir en qué trabajaremos hoy.</div>
               <div class="rootmine-features">
-                <div><b>🧠</b><span>INTELIGENCIA<br>ARTIFICIAL</span></div>
-                <div><b>🛡️</b><span>TRAZABILIDAD<br>TOTAL</span></div>
-                <div><b>🔎</b><span>ANÁLISIS<br>PROFUNDO</span></div>
-                <div><b>📋</b><span>MEJORA<br>CONTINUA</span></div>
+                <div><b>🧠</b><span>ANÁLISIS<br>DE FALLAS</span></div>
+                <div><b>🛡️</b><span>GESTIÓN DE<br>MATERIALES</span></div>
+                <div><b>🔎</b><span>PLANES DE<br>ACCIÓN</span></div>
+                <div><b>📋</b><span>CONOCIMIENTO<br>TÉCNICO</span></div>
               </div>
             </div>
             """,
@@ -354,12 +354,12 @@ def mostrar_identificacion() -> None:
             with st.form("identificacion"):
                 st.markdown('<div class="login-form-title">Ingreso corporativo</div>', unsafe_allow_html=True)
                 correo = st.text_input("Correo Agrosuper", placeholder="nombre@agrosuper.com")
-                continuar = st.form_submit_button("Ingresar a RootMine →", type="primary", use_container_width=True)
+                continuar = st.form_submit_button("Ingresar a NeuralMant →", type="primary", use_container_width=True)
             if continuar:
                 correo = correo.strip().lower()
                 usuario = buscar_usuario_por_correo(correo)
                 if not usuario:
-                    st.error("Este correo no está habilitado en el maestro de usuarios de RootMine.")
+                    st.error("Este correo no está habilitado en el maestro de usuarios de NeuralMant.")
                 elif requiere_llave(usuario):
                     st.session_state.login_pendiente = usuario
                     st.rerun()
@@ -371,30 +371,31 @@ def mostrar_identificacion() -> None:
             correo = pendiente.get("correo", "")
             st.markdown('<div class="login-form-title">Acceso de validador</div>', unsafe_allow_html=True)
             st.caption(f"{nombre} · {rol}")
+            st.text_input("Correo corporativo", value=correo, disabled=True, key="correo_validador")
 
             if tiene_llave(correo):
-                st.info("🔐 Este perfil requiere una llave personal para ingresar y validar ADF.")
+                st.info("🔐 Este perfil requiere una clave personal para ingresar y aprobar solicitudes.")
                 with st.form("validar_llave_acceso"):
-                    llave = st.text_input("Llave de acceso", type="password")
+                    llave = st.text_input("Clave de acceso", type="password")
                     entrar = st.form_submit_button("Validar e ingresar →", type="primary", use_container_width=True)
                 if entrar:
                     if validar_llave(correo, llave):
                         _completar_login(pendiente)
                     else:
-                        st.error("La llave de acceso no es correcta.")
+                        st.error("La clave de acceso no es correcta.")
             else:
-                st.warning("🔑 Primer ingreso como validador: crea tu llave personal. La necesitarás en los próximos accesos.")
+                st.warning("🔑 Primer ingreso como validador: crea tu clave personal. La necesitarás en los próximos accesos.")
                 with st.form("crear_llave_acceso"):
-                    llave1 = st.text_input("Crear llave", type="password", help="Mínimo 6 caracteres")
-                    llave2 = st.text_input("Repetir llave", type="password")
-                    crear = st.form_submit_button("Crear llave e ingresar →", type="primary", use_container_width=True)
+                    llave1 = st.text_input("Crear clave", type="password", help="Mínimo 6 caracteres")
+                    llave2 = st.text_input("Repetir clave", type="password")
+                    crear = st.form_submit_button("Crear clave e ingresar →", type="primary", use_container_width=True)
                 if crear:
                     if llave1 != llave2:
                         st.error("Las llaves no coinciden.")
                     else:
                         try:
                             crear_llave(correo, llave1)
-                            st.success("Llave creada correctamente.")
+                            st.success("Clave creada correctamente.")
                             _completar_login(pendiente)
                         except Exception as error:
                             st.error(str(error))
@@ -405,12 +406,12 @@ def mostrar_identificacion() -> None:
 
         st.markdown(
             '<div class="login-access-note">ⓘ &nbsp;Acceso permitido solo para cuentas corporativas registradas.<br>'
-            '<span>Los perfiles validadores utilizan además una llave personal.</span></div>',
+            '<span>Los perfiles que lo requieren utilizan además una clave personal.</span></div>',
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.6.8 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">NeuralMant Suite v4.6.9 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -451,7 +452,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.8 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.6.9 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
