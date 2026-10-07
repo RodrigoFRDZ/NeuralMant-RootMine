@@ -63,6 +63,7 @@ def impacto(d):
             "porcentaje": float(incremento / bodega * 100) if bodega else None,
             "bodega_proyectada": float(proyectada),
             "porcentaje_reposicion": float(compra / bodega * 100) if bodega else None,
+            "bodega_con_material_solicitado": float(bodega + total_ss),
             "valor_ss_total": float(total_ss), "valor_stock_material_actual": float(stock * precio),
             "porcentaje_ss_total_bodega_actual": float(total_ss / bodega * 100) if bodega else None,
             "porcentaje_ss_total_bodega_proyectada": float(total_ss / proyectada * 100) if proyectada else None,
@@ -290,8 +291,8 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             r.estado = "Pendiente análisis"; destino = r.analista_email
         elif accion == "Validar análisis" and previo == "Pendiente análisis":
             a = dict(analisis or {})
-            if not a.get("fundamento", "").strip():
-                raise ValueError("Debes justificar la validación de materiales.")
+            if a.get("validacion_simple"):
+                a.update(ss_propuesto=float(d.get("cantidad", 0)), criticidad=d["criticidad"], unidad=d.get("unidad", "unidades"))
             _validar({**d, **a}, r.tipo)
             if a.get("criticidad") == "M" and (r.tipo == "MRP" or d.get("perfil") in PERFILES):
                 raise ValueError("Los materiales M no se incorporan al MRP.")

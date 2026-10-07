@@ -229,6 +229,17 @@ def _resumen_valorizacion(a):
         return f"{valor:,.2f} {moneda}"
     def porcentaje(valor):
         return f"{valor:.2f}%" if valor is not None else "Sin base de bodega"
+    if a.get("validacion_simple"):
+        st.markdown("**Impacto de incorporar el material solicitado**")
+        x,y = st.columns(2)
+        x.metric("Stock valorado actual de bodega", dinero(float(a.get("valor_bodega", 0))))
+        y.metric("Precio unitario del material", dinero(float(a.get("precio", 0))))
+        x,y,z = st.columns(3)
+        x.metric("Aumento previsto del stock valorado", dinero(imp["valor_ss_total"]))
+        y.metric("Aumento sobre la bodega actual", porcentaje(imp["porcentaje_ss_total_bodega_actual"]))
+        z.metric("Stock valorado proyectado de bodega", dinero(imp["bodega_con_material_solicitado"]))
+        st.caption(f"{float(a.get('ss_propuesto', 0)):g} {a.get('unidad', 'unidades')} × precio unitario. Proyección al incorporar toda la cantidad solicitada como stock adicional; no confirma una recepción física ni una compra en SAP.")
+        return imp
     st.markdown("**Qué representa el stock de seguridad**")
     x,y,z = st.columns(3)
     x.metric("Valor total del SS propuesto", dinero(imp["valor_ss_total"]))
@@ -281,74 +292,23 @@ def _resumen_valorizacion(a):
 
 
 def _evaluacion(r, clave=""):
-
-    d = r["datos"]; anterior = d.get("analisis", {})
-    a = {"unidad": d.get("unidad", "unidades")}
+    d = r["datos"]
+    a = dict(d.get("analisis") or {})
+    a.update(validacion_simple=True, unidad=d.get("unidad", "unidades"),
+             criticidad=d["criticidad"], ss_propuesto=float(d.get("cantidad", 0)))
     pref = f"eval_{clave}_{r['id']}_{r['version']}_"
-    clases = ["A", "B", "C", "Z"] if r["tipo"] == "MRP" else ["A", "B", "C", "Z", "M"]
-    clase = anterior.get("criticidad", d["criticidad"])
-    a["criticidad"] = st.selectbox("Criticidad validada", clases, index=clases.index(clase) if clase in clases else 0, key=pref+"crit")
-    if r["tipo"] == "MRP":
-        # El perfil solicitado se conserva en la aprobación. Cambios se devuelven al solicitante.
-        st.info(f"Perfil solicitado: {d['perfil']} · {d['mercado']} · Lead time: {d['lead_time']} días")
-    if r["tipo"] == "Stock de seguridad" or d.get("perfil") == "Stock de seguridad":
-        campos = [("ss_actual", "Stock de seguridad actual"), ("ss_propuesto", "Stock de seguridad propuesto"),
-            ("stock", "Stock actual del material en bodega"), ("reservas", "Reservas pendientes"), ("oc", "OC pendientes de entrega"),
-            ("precio", "Precio unitario"), ("valor_bodega", "Valor del stock total actual de la bodega"),
-            ("consumo_mensual", "Consumo promedio mensual total del material"),
-            ("lead_time_dias", "Lead time en días")]
-        st.markdown("**Stock en bodega y valorización**")
-        st.caption(f"Cantidades y consumo en {d['unidad']}. El valor total de la bodega debe incluir todos sus materiales; no solo este repuesto.")
-        ayudas = {
-            "stock": "Cantidad física de este material en la fecha de los datos. No es el stock de seguridad ni el total de unidades de otros materiales.",
-            "valor_bodega": "Valor del inventario físico total de la bodega en la misma fecha y moneda; es la base de comparación del SS valorizado.",
-            "consumo_mensual": "Salidas promedio totales del material por mes: planificadas y emergencias. Solo se usa para la cobertura de bodega y la permanencia del material; la cobertura del SS usa únicamente emergencias por falla.",
-            "precio": "Precio unitario de este material, en la moneda seleccionada.",
-        }
-        cols = st.columns(2)
-        for i,(k,etiqueta) in enumerate(campos):
-            with cols[i%2]:
-                inicial = anterior.get(k, d.get("cantidad", 0) if k=="ss_propuesto" else d.get("lead_time", 0) if k=="lead_time_dias" else 0)
-                a[k] = st.number_input(etiqueta, min_value=0.0, value=float(inicial), key=pref+k, help=ayudas.get(k))
-        a["moneda"] = st.selectbox("Moneda de todos los valores", ["USD", "CLP"], index=int(anterior.get("moneda")=="CLP"), key=pref+"moneda")
-        a["fecha_datos"] = st.date_input("Fecha de los datos de bodega", value=date.fromisoformat(anterior["fecha_datos"]) if anterior.get("fecha_datos") else date.today(), key=pref+"fecha").isoformat()
-        a["periodo_consumo_meses"] = st.number_input("Período usado para el consumo promedio (meses)",
-            min_value=1, value=max(1,int(anterior.get("periodo_consumo_meses",12))), step=1, key=pref+"periodo_consumo")
-        a["stock_promedio_observado"] = st.checkbox("Tengo el stock promedio observado del material en ese mismo período",
-            value=bool(anterior.get("stock_promedio_observado")), key=pref+"tengo_promedio")
-        if a["stock_promedio_observado"]:
-            a["stock_promedio"] = st.number_input(f"Stock promedio observado del material ({d['unidad']})", min_value=0.0,
-                value=float(anterior.get("stock_promedio",0)), key=pref+"stock_promedio",
-                help="Promedio de las existencias observadas durante el mismo período que el consumo. No reemplazarlo por la cantidad solicitada de SS.")
-        st.markdown("**Consumo de emergencia por falla desde el SS**")
-        a["uso_ss_registrado"] = st.checkbox("Tengo registro de salidas del SS por emergencias de fallas",
-            value=bool(anterior.get("uso_ss_registrado")), key=pref+"uso_ss_registrado")
-        if a["uso_ss_registrado"]:
-            st.caption("Registra solo salidas desde la reserva para resolver fallas no planificadas, en el mismo período del consumo promedio. Los trabajos planificados se excluyen del uso de SS.")
-            x,y = st.columns(2)
-            a["uso_ss_cantidad"] = x.number_input(f"Cantidad retirada del SS por fallas ({d['unidad']})", min_value=0.0,
-                value=float(anterior.get("uso_ss_cantidad",0)), key=pref+"uso_ss_cantidad")
-            a["ss_historico_referencia"] = y.number_input(f"SS histórico de referencia del período ({d['unidad']})", min_value=0.0,
-                value=float(anterior.get("ss_historico_referencia",anterior.get("ss_actual",0))), key=pref+"ss_historico_referencia",
-                help="Cantidad de reserva que estuvo vigente en el período analizado. Si cambió, informa una base representativa y explica su criterio en el respaldo.")
-            a["uso_ss_respaldo"] = st.text_input("Aviso / OT correctiva y respaldo de las salidas por falla", value=anterior.get("uso_ss_respaldo", ""),
-                placeholder="Aviso de falla, OT correctiva, movimientos SAP y reporte de salidas de emergencia", key=pref+"uso_ss_respaldo")
-            a["uso_ss_solo_emergencias"] = st.checkbox("Confirmo que son emergencias por falla; excluí todos los trabajos planificados",
-                value=bool(anterior.get("uso_ss_solo_emergencias")), key=pref+"solo_emergencias")
-        a["ss_estadistico_datos_emergencia"] = st.checkbox("Tengo una serie mensual de emergencias por falla para estimar el SS estadístico",
-            value=bool(anterior.get("ss_estadistico_datos_emergencia")), key=pref+"datos_estadisticos_emergencia")
-        if a["ss_estadistico_datos_emergencia"]:
-            a["desviacion"] = st.number_input(f"Desviación mensual de consumo de emergencia por falla ({d['unidad']})",
-                min_value=0.0, value=float(anterior.get("desviacion",0)), key=pref+"desviacion")
-            nivel = st.selectbox("Nivel de servicio para cálculo estadístico", [90, 95, 99], key=pref+"servicio")
-            a["nivel_servicio"] = nivel
-            sugerencia = math.ceil({90:1.28,95:1.64,99:2.33}[nivel]*a["desviacion"]*math.sqrt(a["lead_time_dias"]/30))
-            a["ss_estadistico"] = sugerencia
-            st.caption(f"SS estadístico de emergencias orientativo: {sugerencia} {d['unidad']}. Demanda mensual y lead time convertido a meses de 30 días. Validar unidad y redondeo antes de aprobar.")
-            st.caption("Para repuestos estratégicos de baja rotación, el consumo histórico por sí solo no define la cobertura necesaria. Justifica la cantidad técnicamente.")
-        st.caption("Los consumos planificados no justifican el SS. Para repuestos de baja rotación sin historial de fallas, sustenta la reserva por criticidad y consecuencias de no disponer del material.")
-        _resumen_valorizacion(a)
-    a["fundamento"] = st.text_area("Fundamento del análisis *", value=anterior.get("fundamento", ""), key=pref+"fund")
+    st.markdown("**Validación económica**")
+    st.caption(f"Cantidad solicitada: {a['ss_propuesto']:g} {a['unidad']} · Criticidad: {a['criticidad']}. Los antecedentes del solicitante se conservan.")
+    x,y = st.columns(2)
+    a["valor_bodega"] = x.number_input("Valor del stock total actual de la bodega", min_value=0.0,
+        value=float(a.get("valor_bodega", 0)), key=pref+"valor_bodega",
+        help="Valor de todos los materiales de la bodega, en la misma moneda que el precio unitario.")
+    a["precio"] = y.number_input("Precio unitario del material", min_value=0.0,
+        value=float(a.get("precio", 0)), key=pref+"precio")
+    a.setdefault("moneda", "USD")
+    a["fecha_datos"] = date.today().isoformat()
+    st.caption(f"Moneda de la valorización: {a['moneda']}. Ambos importes deben estar expresados en esta moneda.")
+    _resumen_valorizacion(a)
     return a
 
 
@@ -358,6 +318,8 @@ def _detalle(r, u, clave="general"):
     st.write(f"Material {r['material']} · {d.get('descripcion', '')} · {d.get('unidad', '')}")
     st.caption(f"{r['solicitante_nombre']} · Centro {r['centro']} · {r['area']}")
     st.write(d.get("justificacion", ""))
+    if d.get("analisis", {}).get("validacion_simple") and r["estado"] != "Pendiente análisis":
+        _resumen_valorizacion(d["analisis"])
     with st.expander("Antecedentes y evaluación aprobada"):
         st.dataframe([{"Dato": etiqueta, "Valor": str(d.get(k, "") or "Sin informar")} for k, etiqueta in (
             ("equipos", "Equipos"), ("almacen", "Almacén"), ("criticidad", "Criticidad"),
@@ -368,7 +330,7 @@ def _detalle(r, u, clave="general"):
             st.write(f"Jefe: {r['jefe_email']} · Analizador: {r['analista_email']} · Subgerente: {r['subgerente_email']}")
         if d.get("analisis"):
             st.write("**Evaluación:**", d["analisis"].get("fundamento", ""))
-            if r["tipo"] == "Stock de seguridad":
+            if r["tipo"] == "Stock de seguridad" and not d["analisis"].get("validacion_simple"):
                 _resumen_valorizacion(d["analisis"])
             st.dataframe([{"Dato": k.replace("_", " ").capitalize(), "Valor": str(v)} for k,v in d["analisis"].items() if k != "impacto"], hide_index=True, use_container_width=True)
         if d.get("exportacion"):
@@ -412,7 +374,7 @@ def _detalle(r, u, clave="general"):
     if reemplazo:
         st.warning("Vas a validar en reemplazo del jefe. La decisión quedará registrada con tu nombre y el motivo de ausencia.")
         confirmo_ausencia = st.checkbox("Confirmo que el jefe está ausente y actúo como reemplazo", key=pref+"ausencia")
-    comentario = st.text_area("Motivo de ausencia del jefe y comentario *" if reemplazo else "Comentario o motivo de rechazo/devolución", key=pref+"comentario")
+    comentario = st.text_area("Motivo de ausencia del jefe y comentario *" if reemplazo else "Comentario (opcional al aprobar; obligatorio al devolver o rechazar)", key=pref+"comentario")
     principal = "Validar análisis" if a is not None else "Marcar stock listo" if c is not None else "Aprobar"
     cols = st.columns(3)
     seleccion = None
