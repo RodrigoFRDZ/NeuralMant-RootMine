@@ -1,4 +1,5 @@
 import json
+from html import escape
 from collections import Counter
 
 import streamlit as st
@@ -34,42 +35,54 @@ def _causa_resumen(registro) -> str:
 
 
 def _modulos_inicio(usuario):
-    st.markdown("### Elige tu módulo")
     st.markdown("""<style>
-    .inicio-module {background:#FFF6E6;color:#003087;padding:20px;border-radius:12px;
-        min-height:170px;box-sizing:border-box;font-family:'Poppins','Montserrat',sans-serif;}
-    .inicio-module h3 {color:#003087;margin:0 0 12px;font-size:1.15rem;line-height:1.4;min-height:48px;}
-    .inicio-module p {color:#003087;margin:0;font-size:.9rem;line-height:1.5;}
-    @media(max-width:900px) {.inicio-module {min-height:190px;}}
+    .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales {
+        background:#003087;border-radius:16px;color:#FFF6E6;}
+    .suite-module {padding:12px 10px 4px;min-height:180px;box-sizing:border-box;}
+    .suite-module .module-category {color:#FFF6E6;font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
+    .suite-module h3 {color:#FFF6E6;font-size:1.6rem;line-height:1.3;margin:0 0 12px;min-height:42px;}
+    .suite-module p {color:#FFF6E6;font-size:.95rem;line-height:1.6;margin:0;}
+    @media(max-width:900px) {.suite-module {min-height:205px;}}
     </style>""", unsafe_allow_html=True)
     modulos = [
-        ("📝 RootMine · Análisis de fallas", "Crea o continúa un ADF con el apoyo de GearBot.", "📝 RootMine · Nuevo ADF", "nuevo"),
-        ("📦 Gestión de materiales", "Stock de seguridad, incorporación al MRP y guía de criticidad.", "📦 Gestión de Materiales", "materiales"),
-        ("📋 Planes de acción", "Revisa compromisos, vencimientos y cierre de acciones.", "📋 Planes de acción", "planes"),
-        ("📚 Historial", "Consulta los análisis y las conclusiones de tu equipo.", "📚 Historial", "hist"),
-        ("📊 Indicadores", "Revisa el avance y los resultados de los análisis.", "📊 Indicadores", "ind"),
-        ("🧠 Base de conocimiento", "Busca fallas, causas y soluciones documentadas.", "🧠 Base de conocimiento", "bc"),
-        ("✅ Validaciones ADF", "Revisa análisis y las aprobaciones disponibles para tu cuenta.", "✅ Validaciones", "validaciones"),
+        ("RootMine", "ANÁLISIS DE FALLAS", "Analiza causas, consulta el historial y gestiona indicadores y planes de acción.", "🧠 RootMine", "rootmine"),
+        ("Gestión de Materiales", "MATERIALES Y CONTINUIDAD", "Solicita stock de seguridad, incorpora materiales al MRP y revisa su criticidad y aprobación.", "📦 Gestión de Materiales", "materiales"),
     ]
-    if usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente"):
-        modulos.append(("✅ Aprobaciones de materiales", "Accede directamente a tus solicitudes pendientes de revisión.", "✅ Aprobaciones de materiales", "aprobaciones_materiales"))
-    if usuario.get("es_admin"):
-        modulos.append(("👥 Administración", "Gestiona cuentas, roles y accesos de los usuarios.", "👥 Administración de cuentas", "admin"))
-    for inicio in range(0, len(modulos), 3):
-        columnas = st.columns(3)
-        for col, (titulo, descripcion, pagina, clave) in zip(columnas, modulos[inicio:inicio+3]):
-            with col:
-                st.markdown(f'<div class="inicio-module"><h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
-                if st.button("Abrir módulo →", key="dash_"+clave, use_container_width=True):
-                    st.session_state.pagina = pagina
-                    if clave == "materiales":
-                        st.session_state["mat_vista"] = None
-                    if clave == "nuevo":
-                        st.session_state.pop("nuevo_adf", None)
-                    st.rerun()
+    for col, (titulo, categoria, descripcion, pagina, clave) in zip(st.columns(2), modulos):
+        with col, st.container(border=True, key="suite_modulo_"+clave):
+            st.markdown(f'<div class="suite-module"><div class="module-category">{categoria}</div>'
+                        f'<h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
+            if st.button("Entrar a "+titulo+" →", key="dash_"+clave, use_container_width=True):
+                st.session_state.pagina = pagina
+                if clave == "materiales":
+                    st.session_state["mat_vista"] = None
+                st.rerun()
 
 
 def mostrar_inicio() -> None:
+    usuario = st.session_state.get("usuario_actual") or {}
+    nombre = str(usuario.get("nombre") or st.session_state.get("usuario") or "").strip()
+    saludo = "Hola, " + escape(nombre.split()[0]) + "." if nombre else "Hola."
+    st.markdown(
+        f'''<div class="suite-hero">
+            <div><div class="eyebrow">NEURALMANT SUITE</div>
+            <h1>{saludo} <span>¿En qué trabajaremos hoy?</span></h1></div>
+        </div>''', unsafe_allow_html=True,
+    )
+    cbot, ctext = st.columns([0.72, 3.3], gap="medium", vertical_alignment="center")
+    with cbot:
+        st.image("assets/gearbot_small.png", use_container_width=True)
+    with ctext:
+        st.markdown(
+            '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
+            <div>Bienvenido a NeuralMant. Estoy listo para ayudarte a analizar fallas con RootMine o a gestionar los materiales que necesita tu operación.</div></div>''',
+            unsafe_allow_html=True,
+        )
+    _modulos_inicio(st.session_state.get("usuario_actual") or {})
+
+
+def mostrar_rootmine() -> None:
+    primer_nombre = escape(st.session_state.usuario.split()[0])
     resumen = dashboard_cache()
     total = resumen["aprobados"]
     equipos = resumen["equipos"]
@@ -82,10 +95,10 @@ def mostrar_inicio() -> None:
 
     st.markdown(
         f'''<div class="suite-hero">
-            <div><div class="eyebrow">NEURALMANT SUITE</div>
-            <h1><span>¿En qué trabajaremos hoy?</span></h1>
-            <p>Elige un módulo para comenzar o continuar tu trabajo.</p></div>
-            <div class="suite-badge">TU ESPACIO DE TRABAJO</div>
+            <div><div class="eyebrow">NEURALMANT SUITE · ROOTMINE</div>
+            <h1>Hola, {primer_nombre}. <span>¿Qué falla analizamos hoy?</span></h1>
+            <p>GearBot está listo para acompañarte desde el fenómeno hasta el plan de prevención.</p></div>
+            <div class="suite-badge">RCA + IA</div>
         </div>''',
         unsafe_allow_html=True,
     )
@@ -96,11 +109,9 @@ def mostrar_inicio() -> None:
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
-            <div>Estoy listo para ayudarte con lo que trabajaremos hoy: analizar fallas, justificar materiales y orientar su criticidad. También puedes revisar aprobaciones, planes de acción y el conocimiento de tu equipo.</div></div>''',
+            <div>Estoy listo para ayudarte a identificar el fenómeno, ordenar las causas, profundizar con los 5 Porqués y preparar un informe técnico editable.</div></div>''',
             unsafe_allow_html=True,
         )
-
-    _modulos_inicio(usuario_actual)
 
     st.markdown("### Panel general")
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -184,11 +195,40 @@ def mostrar_inicio() -> None:
                         else:
                             st.error("No fue posible abrir este ADF para corrección.")
 
+    st.markdown("### Accesos rápidos")
+    a1, a2, a3, a4, a5 = st.columns(5)
+    with a1:
+        st.markdown('<div class="action-card blue"><div class="action-icon">📝</div><h3>Nuevo ADF</h3><p>Inicia un análisis guiado de causa raíz.</p></div>', unsafe_allow_html=True)
+        if st.button("Comenzar →", type="primary", use_container_width=True, key="dash_nuevo"):
+            st.session_state.pagina = "📝 RootMine · Nuevo ADF"
+            st.session_state.pop("nuevo_adf", None)
+            st.rerun()
+    with a2:
+        st.markdown('<div class="action-card amber"><div class="action-icon">📚</div><h3>Historial</h3><p>Revisa análisis y conclusiones anteriores.</p></div>', unsafe_allow_html=True)
+        if st.button("Ver historial →", use_container_width=True, key="dash_hist"):
+            st.session_state.pagina = "📚 Historial"
+            st.rerun()
+    with a3:
+        st.markdown('<div class="action-card green"><div class="action-icon">📊</div><h3>Indicadores</h3><p>Visualiza métricas del conocimiento generado.</p></div>', unsafe_allow_html=True)
+        if st.button("Ver indicadores →", use_container_width=True, key="dash_ind"):
+            st.session_state.pagina = "📊 Indicadores"
+            st.rerun()
+    with a4:
+        st.markdown('<div class="action-card amber"><div class="action-icon">📋</div><h3>Planes</h3><p>Gestiona vencimientos, respaldos y cierre de acciones.</p></div>', unsafe_allow_html=True)
+        if st.button("Gestionar →", use_container_width=True, key="dash_planes"):
+            st.session_state.pagina = "📋 Planes de acción"
+            st.rerun()
+    with a5:
+        st.markdown('<div class="action-card purple"><div class="action-icon">🧠</div><h3>Conocimiento</h3><p>Busca fallas, causas y planes ya documentados.</p></div>', unsafe_allow_html=True)
+        if st.button("Explorar →", use_container_width=True, key="dash_bc"):
+            st.session_state.pagina = "🧠 Base de conocimiento"
+            st.rerun()
+
     # Acceso exclusivo del administrador RootMine.
     if _es_admin_rootmine(usuario_actual):
         cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
         with cap_titulo:
-            st.markdown("#### 📡 Capacidad NeuralMant")
+            st.markdown("#### 📡 Capacidad RootMine")
         with cap_actualizar:
             if st.button("↻ Actualizar", key="refresh_capacidad", use_container_width=True):
                 dashboard_cache.clear(); uso_ia_cache.clear(); almacenamiento_cache.clear(); st.rerun()
@@ -204,12 +244,12 @@ def mostrar_inicio() -> None:
         cap1.metric(
             "GearBot · última hora",
             f"{uso_ia.get('ultima_hora', 0)} / {limite_h if limite_h else '—'}",
-            help="Consultas enviadas por NeuralMant durante los últimos 60 minutos.",
+            help="Consultas enviadas por RootMine durante los últimos 60 minutos.",
         )
         cap2.metric(
             "GearBot · hoy",
             f"{uso_ia.get('hoy', 0)} / {limite_d if limite_d else '—'}",
-            help="Consultas enviadas por NeuralMant durante el día actual (hora de Chile).",
+            help="Consultas enviadas por RootMine durante el día actual (hora de Chile).",
         )
 
         if almacenamiento.get("limite_bytes", 0):
@@ -220,7 +260,7 @@ def mostrar_inicio() -> None:
                 f"{libres_mb:.1f} MB libres",
                 delta=f"{usados_mb:.1f} MB usados",
                 delta_color="off",
-                help="Uso de la base PostgreSQL operacional de NeuralMant.",
+                help="Uso de la base PostgreSQL operacional de RootMine.",
             )
             st.progress(min(1.0, almacenamiento.get("porcentaje", 0) / 100.0))
             st.caption(
@@ -235,7 +275,7 @@ def mostrar_inicio() -> None:
                 "Para mostrar el porcentaje exacto de cuota de GearBot, configura "
                 "`GEMINI_HOURLY_LIMIT` y `GEMINI_DAILY_LIMIT` en Secrets con los "
                 "límites que muestra Google AI Studio para este proyecto/modelo. "
-                "NeuralMant ya está contando las consultas automáticamente."
+                "RootMine ya está contando las consultas automáticamente."
             )
         elif limite_h or limite_d:
             if limite_h:
@@ -248,6 +288,19 @@ def mostrar_inicio() -> None:
                 f"GearBot ha registrado {uso_ia['rechazos_cuota_hoy']} intento(s) "
                 "rechazados por cuota durante el día."
             )
+
+        st.markdown("#### ⚙️ Administración")
+        adm_col, _ = st.columns([1.05, 3.95])
+        with adm_col:
+            st.markdown(
+                '<div class="action-card admin"><div class="action-icon">👥</div>'
+                '<h3>Administración</h3>'
+                '<p>Crea, edita y elimina cuentas; gestiona roles y restablece llaves de acceso.</p></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Administrar cuentas →", type="primary", use_container_width=True, key="dash_admin"):
+                st.session_state.pagina = "👥 Administración de cuentas"
+                st.rerun()
 
     recientes = recientes_livianos(limite=5)
     st.markdown("### Análisis recientes")

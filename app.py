@@ -14,7 +14,7 @@ from modulos.historial import mostrar_historial
 from modulos.base_conocimiento import mostrar_base_conocimiento
 from modulos.indicadores import mostrar_indicadores
 from modulos.planes_accion import mostrar_planes_accion
-from modulos.inicio import mostrar_inicio
+from modulos.inicio import mostrar_inicio, mostrar_rootmine
 from modulos.nuevo_adf import mostrar_nuevo_adf, cargar_borrador_para_continuar
 from modulos.validaciones import mostrar_validaciones
 from modulos.notificaciones import mostrar_campana, mostrar_aviso_materiales
@@ -149,6 +149,10 @@ def barra_inicio(pagina: str) -> None:
             st.session_state.pop("nuevo_adf", None)
             st.rerun()
     with col_ruta:
+        if pagina in ("📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"):
+            if st.button("← Panel RootMine", key="volver_rootmine"):
+                st.session_state.pagina = "🧠 RootMine"
+                st.rerun()
         st.markdown(f'<div class="rootmine-breadcrumb">NEURALMANT <span>›</span> {etiqueta}</div>', unsafe_allow_html=True)
     st.markdown('<div class="rootmine-top-divider"></div>', unsafe_allow_html=True)
 
@@ -411,8 +415,21 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">NeuralMant Suite v4.6.9 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">NeuralMant Suite v4.6.10 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
+
+def _opciones_navegacion(usuario, pagina):
+    opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales"]
+    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
+    if pagina in ["🧠 RootMine", *rootmine]:
+        opciones[2:2] = rootmine
+    if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
+        opciones.append("✅ Aprobaciones de materiales")
+    if usuario.get("es_admin"):
+        opciones.append("👥 Administración de cuentas")
+    opciones.append("ℹ️ Acerca de")
+    return opciones
+
 
 def mostrar_menu() -> str:
     usuario = st.session_state.usuario_actual or {}
@@ -431,12 +448,7 @@ def mostrar_menu() -> str:
 
         mostrar_campana(usuario)
 
-        opciones = ["🏠 Dashboard", "📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📦 Gestión de Materiales", "🧠 Base de conocimiento"]
-        if usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente"):
-            opciones.insert(opciones.index("📦 Gestión de Materiales")+1, "✅ Aprobaciones de materiales")
-        if es_admin_rootmine(usuario):
-            opciones.append("👥 Administración de cuentas")
-        opciones.append("ℹ️ Acerca de")
+        opciones = _opciones_navegacion(usuario, st.session_state.pagina)
         if st.session_state.pagina not in opciones:
             st.session_state.pagina = opciones[0]
         pagina = st.radio("Navegación", opciones, index=opciones.index(st.session_state.pagina), label_visibility="collapsed")
@@ -452,7 +464,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.6.9 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.6.10 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -476,6 +488,7 @@ def main() -> None:
         st.session_state["mat_vista"] = None
     st.session_state["_pagina_renderizada"] = pagina
     if pagina == "🏠 Dashboard": mostrar_inicio()
+    elif pagina == "🧠 RootMine": mostrar_rootmine()
     elif pagina == "📝 RootMine · Nuevo ADF": mostrar_nuevo_adf()
     elif pagina == "✅ Validaciones": mostrar_validaciones()
     elif pagina == "📋 Planes de acción": mostrar_planes_accion()
