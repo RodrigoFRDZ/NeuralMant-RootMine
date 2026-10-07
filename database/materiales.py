@@ -148,6 +148,15 @@ def _validar(d, tipo, completo=True):
     if completo and tipo == "Stock de seguridad":
         if float(d.get("cantidad", 0)) <= 0:
             raise ValueError("La cantidad solicitada debe ser mayor a cero.")
+    if completo and tipo == "Stock de seguridad" and d.get("solicitud_valorada"):
+        if d.get("almacen") not in ("M010", "M100"):
+            raise ValueError("Selecciona el almacén M010 o M100.")
+        if float(d.get("precio_unitario", 0)) <= 0 or d.get("moneda") not in ("USD", "CLP"):
+            raise ValueError("Indica precio unitario mayor a cero y moneda.")
+        guia = d.get("guia") or {}
+        calculada = criticidad(**{k: guia.get(k, False if k in ("m_rotativo", "estrategico") else None) for k in ("m_rotativo", "smac", "co", "te", "ma", "estrategico")})
+        if d.get("criticidad") != calculada or bool(d.get("m_rotativo")) != bool(guia.get("m_rotativo")):
+            raise ValueError("La criticidad debe coincidir con las respuestas de la guía.")
     if completo and d.get("uso_ss_registrado"):
         if not d.get("uso_ss_solo_emergencias"):
             raise ValueError("Confirma que el uso de SS incluye solo emergencias por falla y excluye trabajos planificados.")
@@ -155,7 +164,7 @@ def _validar(d, tipo, completo=True):
             raise ValueError("Indica el período del registro de emergencias.")
         if float(d.get("uso_ss_cantidad",0)) > 0 and not str(d.get("uso_ss_respaldo", "")).strip():
             raise ValueError("Indica el aviso, OT correctiva o respaldo de las salidas por emergencia.")
-    for k in ("cantidad", "ss_actual", "ss_propuesto", "precio", "stock", "reservas", "oc", "valor_bodega", "consumo_mensual", "stock_promedio", "desviacion", "lead_time_dias", "uso_ss_cantidad", "ss_historico_referencia", "periodo_consumo_meses"):
+    for k in ("precio_unitario", "cantidad", "ss_actual", "ss_propuesto", "precio", "stock", "reservas", "oc", "valor_bodega", "consumo_mensual", "stock_promedio", "desviacion", "lead_time_dias", "uso_ss_cantidad", "ss_historico_referencia", "periodo_consumo_meses"):
         if k in d and (not math.isfinite(float(d[k])) or float(d[k]) < 0):
             raise ValueError(f"Valor inválido para {k}.")
 
@@ -293,6 +302,9 @@ def decidir(correo, solicitud_id, version, accion, comentario="", analisis=None,
             a = dict(analisis or {})
             if a.get("validacion_simple"):
                 a.update(ss_propuesto=float(d.get("cantidad", 0)), criticidad=d["criticidad"], unidad=d.get("unidad", "unidades"))
+            if d.get("solicitud_valorada"):
+                a.update(precio=float(d["precio_unitario"]), moneda=d["moneda"],
+                         ss_propuesto=float(d["cantidad"]), criticidad=d["criticidad"], unidad=d["unidad"])
             _validar({**d, **a}, r.tipo)
             if a.get("criticidad") == "M" and (r.tipo == "MRP" or d.get("perfil") in PERFILES):
                 raise ValueError("Los materiales M no se incorporan al MRP.")

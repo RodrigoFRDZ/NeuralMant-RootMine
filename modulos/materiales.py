@@ -141,7 +141,14 @@ def _formulario(tipo, u, registros):
         indice = next((i for i,x in enumerate(opciones_area) if _norm(x)==_norm(anterior_area)), None)
         area = st.selectbox("Área *", opciones_area, index=indice,
                             placeholder="Selecciona el área", key=pref+"area") or ""
-        almacen = st.text_input("Almacén", value=d.get("almacen", ""), key=pref+"almacen").strip()
+        if tipo == "Stock de seguridad":
+            almacenes = ["M010", "M100"]
+            almacen = st.selectbox("Almacén *", almacenes,
+                index=almacenes.index(d.get("almacen")) if d.get("almacen") in almacenes else int(bool(d.get("m_rotativo"))),
+                format_func=lambda v: "M010 · Repuestos" if v == "M010" else "M100 · Renovación, motores y bombas",
+                key=pref+"almacen")
+        else:
+            almacen = st.text_input("Almacén", value=d.get("almacen", ""), key=pref+"almacen").strip()
     equipo = st.text_input("Equipos donde se utiliza", value=d.get("equipos", ""), key=pref+"equipos")
     perfil = mercado = ""
     lead_time = 0
@@ -155,15 +162,27 @@ def _formulario(tipo, u, registros):
         with c:
             lead_time = st.number_input("Lead time en días *", min_value=1, value=max(1, int(d.get("lead_time", 1))), step=1, key=pref+"lt")
     cantidad = st.number_input("Stock de seguridad solicitado", min_value=0.0, value=float(d.get("cantidad", 0)), key=pref+"cant") if tipo == "Stock de seguridad" or perfil == "Stock de seguridad" else 0.0
-    with st.expander("Ayuda para asignar criticidad", expanded=False):
-        sugerida, respuestas = _guia(pref+"guia_", d.get("guia", {}))
-    clases = ["A", "B", "C", "Z"] if tipo == "MRP" else ["A", "B", "C", "Z", "M"]
-    seleccion = d.get("criticidad", sugerida)
-    clase = st.selectbox("Criticidad propuesta *", clases, index=clases.index(seleccion) if seleccion in clases else None, placeholder="Selecciona una criticidad", key=pref+"crit")
+    precio_unitario = 0.0
+    moneda = "USD"
+    if tipo == "Stock de seguridad":
+        x,y = st.columns(2)
+        precio_unitario = x.number_input("Precio unitario del material *", min_value=0.0,
+            value=float(d.get("precio_unitario", 0)), key=pref+"precio_unitario")
+        moneda = y.selectbox("Moneda *", ["USD", "CLP"], index=int(d.get("moneda")=="CLP"), key=pref+"moneda")
+        _impacto_solicitud(dict(cantidad=cantidad, precio_unitario=precio_unitario, moneda=moneda, unidad=unidad))
+        st.markdown("**Evalúa la criticidad del material**")
+        clase, respuestas = _guia(pref+"guia_", d.get("guia", {}))
+        st.caption("La criticidad de la solicitud se obtiene de tus respuestas. Revisa los criterios antes de enviarla.")
+    else:
+        with st.expander("Ayuda para asignar criticidad", expanded=False):
+            sugerida, respuestas = _guia(pref+"guia_", d.get("guia", {}))
+        clases = ["A", "B", "C", "Z"]
+        seleccion = d.get("criticidad", sugerida)
+        clase = st.selectbox("Criticidad propuesta *", clases, index=clases.index(seleccion) if seleccion in clases else None, placeholder="Selecciona una criticidad", key=pref+"crit")
+        if respuestas["m_rotativo"]:
+            st.error("Material M: no se permite enviar ni guardar una incorporación al MRP.")
+            clase = "M"
     razon_crit = st.text_input("Fundamento de la criticidad", value=d.get("razon_criticidad", ""), key=pref+"razon")
-    if respuestas["m_rotativo"]:
-        if tipo == "MRP": st.error("Material M: no se permite enviar ni guardar una incorporación al MRP.")
-        else: clase = "M"
     justificacion = respaldo = ""
     resp = {}
     if tipo == "Stock de seguridad":
@@ -206,6 +225,8 @@ def _formulario(tipo, u, registros):
         almacen=almacen, equipos=equipo, perfil=perfil, mercado=mercado, lead_time=int(lead_time),
         cantidad=cantidad, criticidad=clase, razon_criticidad=razon_crit, guia=respuestas,
         m_rotativo=respuestas["m_rotativo"], justificacion=justificacion, respaldo=respaldo)
+    if tipo == "Stock de seguridad":
+        datos.update(solicitud_valorada=True, precio_unitario=precio_unitario, moneda=moneda)
     a,b = st.columns(2)
     draft = a.button("Guardar borrador", key=pref+"guardar", use_container_width=True)
     enviar = b.button("Guardar material para MRP" if tipo == "MRP" else "Enviar al jefe de área", key=pref+"enviar", type="primary", use_container_width=True)
@@ -220,6 +241,20 @@ def _formulario(tipo, u, registros):
             st.rerun()
         except ValueError as exc:
             st.error(str(exc))
+
+
+def _impacto_solicitud(d):
+    if "precio_unitario" not in d:
+        st.caption("Esta solicitud anterior no incluye precio unitario; se completará en la validación económica.")
+        return
+    cantidad = float(d.get("cantidad", 0))
+    precio = float(d.get("precio_unitario", 0))
+    moneda = d.get("moneda", "USD")
+    x,y,z = st.columns(3)
+    x.metric("Cantidad solicitada", f"{cantidad:g} {d.get('unidad', '')}")
+    y.metric("Precio unitario solicitado", f"{precio:,.2f} {moneda}")
+    z.metric("Impacto económico solicitado", f"{cantidad * precio:,.2f} {moneda}")
+    st.caption("Valor de la cantidad solicitada = cantidad × precio unitario. El porcentaje sobre la bodega se incorpora en la validación económica; la recepción física se confirma al completar el flujo.")
 
 
 def _resumen_valorizacion(a):
@@ -304,7 +339,11 @@ def _evaluacion(r, clave=""):
         value=float(a.get("valor_bodega", 0)), key=pref+"valor_bodega",
         help="Valor de todos los materiales de la bodega, en la misma moneda que el precio unitario.")
     a["precio"] = y.number_input("Precio unitario del material", min_value=0.0,
-        value=float(a.get("precio", 0)), key=pref+"precio")
+        value=float(d.get("precio_unitario", a.get("precio", 0))), key=pref+"precio",
+        disabled=bool(d.get("solicitud_valorada")), help="Precio informado por el solicitante. Para corregirlo, devuelve la solicitud." if d.get("solicitud_valorada") else None)
+    if d.get("solicitud_valorada"):
+        a["precio"] = float(d["precio_unitario"])
+        a["moneda"] = d["moneda"]
     a.setdefault("moneda", "USD")
     a["fecha_datos"] = date.today().isoformat()
     st.caption(f"Moneda de la valorización: {a['moneda']}. Ambos importes deben estar expresados en esta moneda.")
@@ -318,6 +357,8 @@ def _detalle(r, u, clave="general"):
     st.write(f"Material {r['material']} · {d.get('descripcion', '')} · {d.get('unidad', '')}")
     st.caption(f"{r['solicitante_nombre']} · Centro {r['centro']} · {r['area']}")
     st.write(d.get("justificacion", ""))
+    if r["tipo"] == "Stock de seguridad":
+        _impacto_solicitud(d)
     if d.get("analisis", {}).get("validacion_simple") and r["estado"] != "Pendiente análisis":
         _resumen_valorizacion(d["analisis"])
     with st.expander("Antecedentes y evaluación aprobada"):
@@ -533,7 +574,7 @@ def mostrar_materiales():
     if st.session_state.get("mat_flash"):
         st.success(st.session_state.pop("mat_flash"))
     if "mat_vista" not in st.session_state:
-        st.session_state["mat_vista"] = "Stock de seguridad"
+        st.session_state["mat_vista"] = None
     st.markdown("""<style>
     .mat-nav-title {min-height: 42px; display: flex; align-items: center;
         font-weight: 650; line-height: 1.35; margin-bottom: 8px;}
@@ -555,10 +596,14 @@ def mostrar_materiales():
             if st.button("Abrir", key="mat_ventana_"+nombre, use_container_width=True,
                          type="primary" if st.session_state["mat_vista"] == nombre else "secondary"):
                 st.session_state["mat_vista"] = nombre
+                st.session_state["mat_eleccion_vista"] = True
                 st.session_state["pagina"] = "📦 Gestión de Materiales"
                 st.rerun()
     st.divider()
     vista = st.session_state["mat_vista"]
+    if vista is None:
+        st.info("Selecciona una de las cuatro opciones para comenzar.")
+        return
     st.header(vista)
     registros = listar(u["correo"])
     if vista == "Stock de seguridad":

@@ -33,8 +33,43 @@ def _causa_resumen(registro) -> str:
     return efecto[:70] + ("…" if len(efecto) > 70 else "") if efecto else "Pendiente de conclusión"
 
 
+def _modulos_inicio(usuario):
+    st.markdown("### Elige tu módulo")
+    st.markdown("""<style>
+    .inicio-module {background:#FFF6E6;color:#003087;padding:20px;border-radius:12px;
+        min-height:170px;box-sizing:border-box;font-family:'Poppins','Montserrat',sans-serif;}
+    .inicio-module h3 {color:#003087;margin:0 0 12px;font-size:1.15rem;line-height:1.4;min-height:48px;}
+    .inicio-module p {color:#003087;margin:0;font-size:.9rem;line-height:1.5;}
+    @media(max-width:900px) {.inicio-module {min-height:190px;}}
+    </style>""", unsafe_allow_html=True)
+    modulos = [
+        ("📝 Análisis de fallas", "Crea o continúa un ADF con el apoyo de GearBot.", "📝 RootMine · Nuevo ADF", "nuevo"),
+        ("📦 Gestión de materiales", "Stock de seguridad, incorporación al MRP y guía de criticidad.", "📦 Gestión de Materiales", "materiales"),
+        ("📋 Planes de acción", "Revisa compromisos, vencimientos y cierre de acciones.", "📋 Planes de acción", "planes"),
+        ("📚 Historial", "Consulta los análisis y las conclusiones de tu equipo.", "📚 Historial", "hist"),
+        ("📊 Indicadores", "Revisa el avance y los resultados de los análisis.", "📊 Indicadores", "ind"),
+        ("🧠 Base de conocimiento", "Busca fallas, causas y soluciones documentadas.", "🧠 Base de conocimiento", "bc"),
+        ("✅ Validaciones ADF", "Revisa análisis y las aprobaciones disponibles para tu cuenta.", "✅ Validaciones", "validaciones"),
+    ]
+    if usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente"):
+        modulos.append(("✅ Aprobaciones de materiales", "Accede directamente a tus solicitudes pendientes de revisión.", "✅ Aprobaciones de materiales", "aprobaciones_materiales"))
+    if usuario.get("es_admin"):
+        modulos.append(("👥 Administración", "Gestiona cuentas, roles y accesos de los usuarios.", "👥 Administración de cuentas", "admin"))
+    for inicio in range(0, len(modulos), 3):
+        columnas = st.columns(3)
+        for col, (titulo, descripcion, pagina, clave) in zip(columnas, modulos[inicio:inicio+3]):
+            with col:
+                st.markdown(f'<div class="inicio-module"><h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
+                if st.button("Abrir módulo →", key="dash_"+clave, use_container_width=True):
+                    st.session_state.pagina = pagina
+                    if clave == "materiales":
+                        st.session_state["mat_vista"] = None
+                    if clave == "nuevo":
+                        st.session_state.pop("nuevo_adf", None)
+                    st.rerun()
+
+
 def mostrar_inicio() -> None:
-    primer_nombre = st.session_state.usuario.split()[0]
     resumen = dashboard_cache()
     total = resumen["aprobados"]
     equipos = resumen["equipos"]
@@ -48,9 +83,9 @@ def mostrar_inicio() -> None:
     st.markdown(
         f'''<div class="suite-hero">
             <div><div class="eyebrow">NEURALMANT SUITE · ROOTMINE</div>
-            <h1>Hola, {primer_nombre}. <span>¿Qué falla analizamos hoy?</span></h1>
-            <p>GearBot está listo para acompañarte desde el fenómeno hasta el plan de prevención.</p></div>
-            <div class="suite-badge">RCA + IA</div>
+            <h1><span>¿En qué trabajaremos hoy?</span></h1>
+            <p>Elige un módulo para comenzar o continuar tu trabajo.</p></div>
+            <div class="suite-badge">TU ESPACIO DE TRABAJO</div>
         </div>''',
         unsafe_allow_html=True,
     )
@@ -61,9 +96,11 @@ def mostrar_inicio() -> None:
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
-            <div>Estoy listo para ayudarte a identificar el fenómeno, ordenar las causas, profundizar con los 5 Porqués y preparar un informe técnico editable.</div></div>''',
+            <div>Estoy listo para ayudarte con lo que trabajaremos hoy: analizar fallas, justificar materiales y orientar su criticidad. También puedes revisar aprobaciones, planes de acción y el conocimiento de tu equipo.</div></div>''',
             unsafe_allow_html=True,
         )
+
+    _modulos_inicio(usuario_actual)
 
     st.markdown("### Panel general")
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -147,35 +184,6 @@ def mostrar_inicio() -> None:
                         else:
                             st.error("No fue posible abrir este ADF para corrección.")
 
-    st.markdown("### Accesos rápidos")
-    a1, a2, a3, a4, a5 = st.columns(5)
-    with a1:
-        st.markdown('<div class="action-card blue"><div class="action-icon">📝</div><h3>Nuevo ADF</h3><p>Inicia un análisis guiado de causa raíz.</p></div>', unsafe_allow_html=True)
-        if st.button("Comenzar →", type="primary", use_container_width=True, key="dash_nuevo"):
-            st.session_state.pagina = "📝 RootMine · Nuevo ADF"
-            st.session_state.pop("nuevo_adf", None)
-            st.rerun()
-    with a2:
-        st.markdown('<div class="action-card amber"><div class="action-icon">📚</div><h3>Historial</h3><p>Revisa análisis y conclusiones anteriores.</p></div>', unsafe_allow_html=True)
-        if st.button("Ver historial →", use_container_width=True, key="dash_hist"):
-            st.session_state.pagina = "📚 Historial"
-            st.rerun()
-    with a3:
-        st.markdown('<div class="action-card green"><div class="action-icon">📊</div><h3>Indicadores</h3><p>Visualiza métricas del conocimiento generado.</p></div>', unsafe_allow_html=True)
-        if st.button("Ver indicadores →", use_container_width=True, key="dash_ind"):
-            st.session_state.pagina = "📊 Indicadores"
-            st.rerun()
-    with a4:
-        st.markdown('<div class="action-card amber"><div class="action-icon">📋</div><h3>Planes</h3><p>Gestiona vencimientos, respaldos y cierre de acciones.</p></div>', unsafe_allow_html=True)
-        if st.button("Gestionar →", use_container_width=True, key="dash_planes"):
-            st.session_state.pagina = "📋 Planes de acción"
-            st.rerun()
-    with a5:
-        st.markdown('<div class="action-card purple"><div class="action-icon">🧠</div><h3>Conocimiento</h3><p>Busca fallas, causas y planes ya documentados.</p></div>', unsafe_allow_html=True)
-        if st.button("Explorar →", use_container_width=True, key="dash_bc"):
-            st.session_state.pagina = "🧠 Base de conocimiento"
-            st.rerun()
-
     # Acceso exclusivo del administrador RootMine.
     if _es_admin_rootmine(usuario_actual):
         cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
@@ -241,49 +249,18 @@ def mostrar_inicio() -> None:
                 "rechazados por cuota durante el día."
             )
 
-        st.markdown("#### ⚙️ Administración")
-        adm_col, _ = st.columns([1.05, 3.95])
-        with adm_col:
+    recientes = recientes_livianos(limite=5)
+    st.markdown("### Análisis recientes")
+    if not recientes:
+        st.info("Aún no existen análisis registrados.")
+    else:
+        for adf in recientes:
+            estado = adf.estado or "Borrador"
             st.markdown(
-                '<div class="action-card admin"><div class="action-icon">👥</div>'
-                '<h3>Administración</h3>'
-                '<p>Crea, edita y elimina cuentas; gestiona roles y restablece llaves de acceso.</p></div>',
+                f'''<div class="recent-row"><div class="recent-icon">📄</div>
+                <div class="recent-copy"><b>ADF #{adf.id} · {adf.equipo}</b><span>{((adf.centro or "") + (" - " + adf.planta if adf.planta else "")) or "Centro no registrado"} · {adf.area} · N° {adf.numero_equipo or "s/i"} · {_causa_resumen(adf)}</span></div>
+                <div class="recent-meta"><span>{adf.fecha_actualizacion:%d/%m/%Y}</span><em>{estado}</em></div></div>''',
                 unsafe_allow_html=True,
             )
-            if st.button("Administrar cuentas →", type="primary", use_container_width=True, key="dash_admin"):
-                st.session_state.pagina = "👥 Administración de cuentas"
-                st.rerun()
-
-    left, right = st.columns([1.35, 1], gap="large")
-    with left:
-        recientes = recientes_livianos(limite=5)
-        st.markdown("### Análisis recientes")
-        if not recientes:
-            st.info("Aún no existen análisis registrados.")
-        else:
-            for adf in recientes:
-                estado = adf.estado or "Borrador"
-                st.markdown(
-                    f'''<div class="recent-row"><div class="recent-icon">📄</div>
-                    <div class="recent-copy"><b>ADF #{adf.id} · {adf.equipo}</b><span>{((adf.centro or "") + (" - " + adf.planta if adf.planta else "")) or "Centro no registrado"} · {adf.area} · N° {adf.numero_equipo or "s/i"} · {_causa_resumen(adf)}</span></div>
-                    <div class="recent-meta"><span>{adf.fecha_actualizacion:%d/%m/%Y}</span><em>{estado}</em></div></div>''',
-                    unsafe_allow_html=True,
-                )
-    with right:
-        st.markdown("### Módulos NeuralMant")
-        if st.button("🧠 RootMine →", key="modulo_rootmine", type="primary", use_container_width=True):
-            st.session_state.pagina = "📝 RootMine · Nuevo ADF"
-            st.rerun()
-        st.caption("Análisis inteligente de causa raíz")
-
-        if st.button("📦 Gestión de Materiales →", key="modulo_materiales", type="primary", use_container_width=True):
-            st.session_state.pagina = "📦 Gestión de Materiales"
-            st.rerun()
-        st.caption("Stock de seguridad · MRP · Criticidad")
-
-        st.button("📈 Predict · Próximamente", key="modulo_predict", disabled=True, use_container_width=True)
-        st.caption("Mantenimiento predictivo")
-        st.button("📋 Planner · Próximamente", key="modulo_planner", disabled=True, use_container_width=True)
-        st.caption("Estrategias y planes")
 
     st.info("Las sugerencias de GearBot son una guía de investigación. La validación final siempre corresponde al equipo técnico.")

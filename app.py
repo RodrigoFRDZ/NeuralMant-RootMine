@@ -308,6 +308,8 @@ def _completar_login(usuario: dict) -> None:
     st.session_state.login_pendiente = None
     st.session_state.ultimo_toque_sesion = datetime.now()
     # Login nuevo: arranca limpio. La restauración de cookies se reserva para F5.
+    st.session_state.pagina = "🏠 Dashboard"
+    st.session_state["mat_vista"] = None
     st.session_state["_contexto_browser_restaurado"] = True
     st.session_state["_cookie_pagina_cache"] = "🏠 Dashboard"
     st.session_state["_cookie_borrador_cache"] = ""
@@ -408,7 +410,7 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">RootMine v4.6.7 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">RootMine v4.6.8 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def mostrar_menu() -> str:
@@ -449,7 +451,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.7 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite · RootMine v4.6.8 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -468,6 +470,10 @@ def main() -> None:
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
     mostrar_aviso_materiales(st.session_state.usuario_actual)
+    eleccion_materiales = st.session_state.pop("mat_eleccion_vista", False)
+    if pagina == "📦 Gestión de Materiales" and st.session_state.get("_pagina_renderizada") != pagina and not st.session_state.get("mat_solicitud_enlace") and not eleccion_materiales:
+        st.session_state["mat_vista"] = None
+    st.session_state["_pagina_renderizada"] = pagina
     if pagina == "🏠 Dashboard": mostrar_inicio()
     elif pagina == "📝 RootMine · Nuevo ADF": mostrar_nuevo_adf()
     elif pagina == "✅ Validaciones": mostrar_validaciones()
