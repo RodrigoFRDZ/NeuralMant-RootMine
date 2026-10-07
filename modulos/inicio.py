@@ -37,11 +37,15 @@ def _causa_resumen(registro) -> str:
 def _modulos_inicio(usuario):
     st.markdown("""<style>
     .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales {
-        background:#003087;border-radius:16px;color:#FFF6E6;}
+        background:linear-gradient(145deg,var(--rm-panel2,#22272d),var(--rm-panel,#1c2025))!important;
+        border:1px solid var(--rm-line,#343a41)!important;border-radius:16px;
+        color:var(--rm-text,#f5f7fa);transition:border-color .18s ease;}
+    .st-key-suite_modulo_rootmine:hover, .st-key-suite_modulo_materiales:hover {
+        border-color:var(--rm-orange,#ff7a00)!important;}
     .suite-module {padding:12px 10px 4px;min-height:180px;box-sizing:border-box;}
-    .suite-module .module-category {color:#FFF6E6;font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
-    .suite-module h3 {color:#FFF6E6;font-size:1.6rem;line-height:1.3;margin:0 0 12px;min-height:42px;}
-    .suite-module p {color:#FFF6E6;font-size:.95rem;line-height:1.6;margin:0;}
+    .suite-module .module-category {color:var(--rm-orange2,#ff9a3d);font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
+    .suite-module h3 {color:var(--rm-text,#f5f7fa);font-size:1.6rem;line-height:1.3;margin:0 0 12px;min-height:42px;}
+    .suite-module p {color:var(--rm-text,#f5f7fa);opacity:.85;font-size:.95rem;line-height:1.6;margin:0;}
     @media(max-width:900px) {.suite-module {min-height:205px;}}
     </style>""", unsafe_allow_html=True)
     modulos = [
