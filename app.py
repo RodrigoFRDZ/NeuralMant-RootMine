@@ -21,6 +21,7 @@ from modulos.notificaciones import mostrar_campana, mostrar_aviso_materiales
 from modulos.navegacion_materiales import abrir_material_desde_url
 from modulos.administracion import mostrar_administracion
 from modulos.materiales import mostrar_materiales
+from modulos.trabajos import mostrar_trabajos
 
 st.set_page_config(
     page_title="NeuralMant Suite",
@@ -273,7 +274,7 @@ def cerrar_sesion_rootmine() -> None:
         st.session_state.pop(clave, None)
 
     for clave in list(st.session_state):
-        if str(clave).startswith(("mat_", "eval_", "accion_", "guia_independiente_")):
+        if str(clave).startswith(("mat_", "eval_", "accion_", "guia_independiente_", "trab_")):
             st.session_state.pop(clave, None)
     st.session_state.pagina = "🏠 Dashboard"
 
@@ -415,11 +416,11 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">NeuralMant Suite v4.6.11 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">NeuralMant Suite v4.7.2 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def _opciones_navegacion(usuario, pagina):
-    opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales"]
+    opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
     rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
     if pagina in ["🧠 RootMine", *rootmine]:
         opciones[2:2] = rootmine
@@ -464,7 +465,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.6.11 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.7.2 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -495,6 +496,7 @@ def main() -> None:
     elif pagina == "📚 Historial": mostrar_historial()
     elif pagina == "📊 Indicadores": mostrar_indicadores()
     elif pagina == "📦 Gestión de Materiales": mostrar_materiales()
+    elif pagina == "🛠️ Seguimiento de trabajos": mostrar_trabajos()
     elif pagina == "✅ Aprobaciones de materiales":
         st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
         mostrar_materiales()

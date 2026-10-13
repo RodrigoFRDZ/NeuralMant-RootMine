@@ -36,11 +36,11 @@ def _causa_resumen(registro) -> str:
 
 def _modulos_inicio(usuario):
     st.markdown("""<style>
-    .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales {
+    .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales, .st-key-suite_modulo_trabajos {
         background:linear-gradient(145deg,var(--rm-panel2,#22272d),var(--rm-panel,#1c2025))!important;
         border:1px solid var(--rm-line,#343a41)!important;border-radius:16px;
         color:var(--rm-text,#f5f7fa);transition:border-color .18s ease;}
-    .st-key-suite_modulo_rootmine:hover, .st-key-suite_modulo_materiales:hover {
+    .st-key-suite_modulo_rootmine:hover, .st-key-suite_modulo_materiales:hover, .st-key-suite_modulo_trabajos:hover {
         border-color:var(--rm-orange,#ff7a00)!important;}
     .suite-module {padding:12px 10px 4px;min-height:180px;box-sizing:border-box;}
     .suite-module .module-category {color:var(--rm-orange2,#ff9a3d);font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
@@ -51,8 +51,9 @@ def _modulos_inicio(usuario):
     modulos = [
         ("RootMine", "ANÁLISIS DE FALLAS", "Analiza causas, consulta el historial y gestiona indicadores y planes de acción.", "🧠 RootMine", "rootmine"),
         ("Gestión de Materiales", "MATERIALES Y CONTINUIDAD", "Solicita stock de seguridad, incorpora materiales al MRP y revisa su criticidad y aprobación.", "📦 Gestión de Materiales", "materiales"),
+        ("Seguimiento de trabajos", "AVANCE Y ENTREGA DE TURNO", "Consulta la programación del fin de semana, pendientes, fotos y pruebas para la partida.", "🛠️ Seguimiento de trabajos", "trabajos"),
     ]
-    for col, (titulo, categoria, descripcion, pagina, clave) in zip(st.columns(2), modulos):
+    for col, (titulo, categoria, descripcion, pagina, clave) in zip(st.columns(3), modulos):
         with col, st.container(border=True, key="suite_modulo_"+clave):
             st.markdown(f'<div class="suite-module"><div class="module-category">{categoria}</div>'
                         f'<h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
@@ -79,7 +80,7 @@ def mostrar_inicio() -> None:
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
-            <div>Bienvenido a NeuralMant. Estoy listo para ayudarte a analizar fallas con RootMine o a gestionar los materiales que necesita tu operación.</div></div>''',
+            <div>Bienvenido a NeuralMant. Estoy listo para ayudarte a analizar fallas con RootMine o a gestionar materiales y seguir el avance de los trabajos de tu operación.</div></div>''',
             unsafe_allow_html=True,
         )
     _modulos_inicio(st.session_state.get("usuario_actual") or {})
