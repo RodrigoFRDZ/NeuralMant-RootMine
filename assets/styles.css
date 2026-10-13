@@ -431,3 +431,8 @@ div[data-testid="stDownloadButton"] > button:hover {
 [data-testid="stTextArea"] textarea{background:#fff!important;color:#17212b!important;-webkit-text-fill-color:#17212b!important;caret-color:#17212b!important;font-size:16px!important}
 [data-testid="stChatMessage"]{border:1px solid #414950!important;border-radius:14px!important;background:#23282e!important;color:#f4f6f8!important}
 @media(max-width:640px){.trab-dashboard{padding:18px}.trab-area{padding:16px 16px 28px}.trab-area strong{font-size:20px}.trab-area span{max-width:210px}.trab-readiness{padding:12px}}
+
+/* Area selection remains visible while reading the task conversation. */
+[data-testid="stVerticalBlockBorderWrapper"]:has(.trab-chat-area-anchor){position:sticky;top:3.5rem;z-index:40;border-color:#ff932b!important;background:#23282e!important;box-shadow:0 8px 22px rgba(0,0,0,.35)!important}
+.trab-chat-area-anchor{display:none}
+@media(max-width:640px){[data-testid="stVerticalBlockBorderWrapper"]:has(.trab-chat-area-anchor){top:3rem}}

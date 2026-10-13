@@ -159,56 +159,71 @@ def _chat(u,n):
     if not opciones:
         st.info('No hay trabajos disponibles para actualizar en esta programación.');return
     pendiente_key=f'trab_chat_pendiente_{n}'
-    destino_key=f'trab_chat_destino_{n}'
     seleccionado_key=f'trab_chat_activo_{n}'
-    mensaje=None;fotos=[]
+    area_key=f'trab_chat_area_{n}'
+    mensaje=None;fotos=[];version_envio=None
+    anterior=st.session_state.get(seleccionado_key)
+    if area_key not in st.session_state and anterior:
+        anterior_fila=next((d for d in opciones if d['id']==anterior),None)
+        if anterior_fila:st.session_state[area_key]=anterior_fila['area']
+    def cambiar_area():
+        st.session_state.pop(seleccionado_key,None)
+        st.session_state.pop(f'trab_chat_incluir_terminados_{n}',None)
+    with st.container(border=True):
+        st.markdown('<span class="trab-chat-area-anchor"></span>',unsafe_allow_html=True)
+        st.write('**¿A qué área vamos ahora?**')
+        areas=sorted({d['area'] for d in opciones})
+        if st.session_state.get(area_key) not in [None]+areas:st.session_state.pop(area_key,None)
+        area=st.selectbox('Área que estás revisando',[None]+areas,key=area_key,format_func=lambda v:v or 'Elige un área',on_change=cambiar_area)
+        if area:st.caption('Área actual: '+area+' · Puedes cambiarla en cualquier momento.')
+    if not area:
+        with st.chat_message('assistant'):st.write('Elige el área que estás recorriendo y te muestro sus trabajos pendientes.')
+        return
+    grupo=[d for d in opciones if d['area']==area]
+    pendientes=[d for d in grupo if d['estado']!='Terminado' or d['prueba'] not in ('Aprobada','No requerida') or d.get('pendiente')]
     with st.chat_message('assistant'):
-        st.write('Cuéntame cómo va la pega. Después elegimos a qué trabajo corresponde, y yo te ayudo a ordenar el avance.')
+        st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos con ejecución, pruebas o pendientes por revisar**. ¿Qué pega vemos?")
+    mostrar_todos=st.checkbox('Ver también trabajos terminados y con pruebas resueltas',key=f'trab_chat_incluir_terminados_{n}')
+    visibles=grupo if mostrar_todos else pendientes
+    actual=st.session_state.get(seleccionado_key)
+    # Keep the just-completed task visible so its confirmation and evidence can be read.
+    if actual and actual not in {d['id'] for d in visibles}:
+        ultima=next((d for d in grupo if d['id']==actual),None)
+        if ultima:visibles=visibles+[ultima]
+        else:st.session_state.pop(seleccionado_key,None)
+    if not visibles:st.success('Esta área no tiene trabajos pendientes según lo registrado. Puedes pasar a otra área.');return
+    ident=st.selectbox('¿Qué trabajo revisamos?',[None]+[d['id'] for d in visibles],key=seleccionado_key,
+        format_func=lambda i:'Selecciona una pega' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {d['estado']} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
+    if not ident:return
+    d=next(x for x in grupo if x['id']==ident)
+    with st.chat_message('assistant'):
+        st.write(f"**{area} · {d['descripcion']}**")
+        st.write('Cuéntame lo que viste ahora: qué se hizo, qué falta o si hubo algún hallazgo. Te ayudo a ordenar el avance.')
+    for h in d['historial'][-12:]:
+        with st.chat_message('user'):
+            st.caption(f"{h['nombre']} · {_fecha(h['fecha'])}")
+            st.write(h.get('mensaje') or f"{h['estado']} · Prueba: {h['prueba']}")
     pendiente=st.session_state.get(pendiente_key)
     if pendiente:
-        with st.chat_message('user'):st.write(pendiente['mensaje'])
-        with st.chat_message('assistant'):
-            st.write('¿A qué trabajo corresponde esta novedad?')
-            buscar=st.text_input('Buscar por OT, área o descripción',key=f'trab_chat_buscar_{n}')
-            tokens=set(re.findall(r'\w{3,}',pendiente['mensaje'].lower()))
-            def puntaje(d):
-                return (100 if d.get('ot') and d['ot'] in pendiente['mensaje'] else 0)+len(tokens & set(re.findall(r'\w{3,}',(d['descripcion']+' '+d['area']).lower())))
-            candidatas=sorted(opciones,key=puntaje,reverse=True)
-            if buscar:candidatas=[d for d in candidatas if buscar.lower() in (str(d.get('ot',''))+' '+d['descripcion']+' '+d['area']).lower()]
-            elegido=st.selectbox('Trabajo para esta novedad',[None]+[d['id'] for d in candidatas],key=f'trab_chat_elegir_{n}',format_func=lambda i:'Selecciona el trabajo' if i is None else next(f"{d['area']} · OT {d.get('ot') or '#'+str(i)} · {d['descripcion']}" for d in candidatas if d['id']==i))
-            if st.button('Registrar en este trabajo',disabled=elegido is None,type='primary'):
-                st.session_state[destino_key]=elegido;st.rerun()
-            if st.button('Descartar novedad sin guardar'):
-                st.session_state.pop(pendiente_key,None);st.session_state.pop(destino_key,None);st.rerun()
-        if not st.session_state.get(destino_key):return
-        ident=st.session_state.pop(destino_key)
-        if ident not in {d['id'] for d in opciones}:st.error('El trabajo ya no está disponible.');return
-        st.session_state[seleccionado_key]=ident
-        mensaje=pendiente['mensaje'];fotos=pendiente['fotos']
-    else:
-        ident=st.session_state.get(seleccionado_key)
-        if ident not in {d['id'] for d in opciones}:ident=None
-    if ident:
-        d=next(x for x in opciones if x['id']==ident)
-        with st.chat_message('assistant'):st.write(f"**{d['area']} · {d['descripcion']}** · {d['estado']} · Prueba: {d['prueba']}")
-        for h in d['historial'][-12:]:
-            with st.chat_message('user'):
-                st.caption(f"{h['nombre']} · {_fecha(h['fecha'])}")
-                st.write(h.get('mensaje') or f"{h['estado']} · Prueba: {h['prueba']}")
+        st.warning('Hay una novedad que no se pudo guardar. Conserva su trabajo original; no se enviará a otra área.')
+        st.write(pendiente['mensaje'])
+        if pendiente.get('trabajo_id')==ident and st.button('Reintentar guardar en este trabajo'):
+            mensaje=pendiente['mensaje'];fotos=pendiente['fotos'];version_envio=d['version']
+        if st.button('Descartar novedad sin guardar'):
+            st.session_state.pop(pendiente_key,None);st.rerun()
     with st.expander('Adjuntar fotos (opcional)'):
-        adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}')
-    escrito=st.chat_input('Escribe el avance, hallazgo o pendiente…',key=f'trab_chat_entrada_{n}',disabled=bool(pendiente))
+        adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
+    escrito=st.chat_input(f'¿Cómo va esta pega en {area}?…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
     if escrito:
         if len(escrito)>10000 or len(adjuntos or [])>3 or any(f.size>2*1024*1024 for f in adjuntos or []):
             st.error('Máximo 10.000 caracteres y 3 fotos de hasta 2 MB.');return
-        st.session_state[pendiente_key]=dict(mensaje=escrito,fotos=[(f.name,f.getvalue()) for f in adjuntos or []])
-        st.session_state.pop(f'trab_chat_elegir_{n}',None);st.session_state.pop(f'trab_chat_buscar_{n}',None);st.rerun()
-    if not ident:return
+        mensaje=escrito;fotos=[(f.name,f.getvalue()) for f in adjuntos or []];version_envio=d['version']
+        st.session_state[pendiente_key]=dict(trabajo_id=ident,mensaje=mensaje,fotos=fotos)
     clave=f'trab_chat_propuesta_{n}_{ident}'
     if mensaje:
         cambio={k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')}
         try:
-            version=db.actualizar(u['correo'],n,ident,d['version'],cambio,fotos,mensaje=mensaje)
+            version=db.actualizar(u['correo'],n,ident,version_envio,cambio,fotos,mensaje=mensaje)
             st.session_state.pop(clave,None)
             st.session_state.pop(pendiente_key,None)
             try:
@@ -225,7 +240,7 @@ def _chat(u,n):
             except Exception:
                 st.session_state['trab_flash']='Novedad guardada. GearBot no pudo ordenarla ahora; puedes usar los estados rápidos.'
             st.session_state.pop(f'trab_revision_{n}_{ident}',None)
-            st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}',f'trab_form_{ident}_']
+            st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{ident}',f'trab_form_{ident}_']
             st.rerun()
         except ValueError as exc:st.error(str(exc))
     propuesta=st.session_state.get(clave)
