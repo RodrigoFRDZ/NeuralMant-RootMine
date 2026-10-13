@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from database.conexion import engine
 from database.modelos import LlaveAcceso
 
-ROLES_CON_LLAVE = {"supervisor", "jefe", "ingeniero", "subgerente", "analizador_materiales"}
+ROLES_CON_LLAVE = {"supervisor", "coordinador_mantenimiento", "coordinador", "jefe", "ingeniero", "subgerente", "analizador_materiales"}
 ITERACIONES = 210_000
 
 

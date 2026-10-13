@@ -11,6 +11,8 @@ from database.conexion import engine
 from database.materiales import _usuario
 
 ESTADOS = ['Pendiente', 'En ejecución', 'Detenido', 'Terminado']
+ROLES_AVANCE = {'supervisor', 'coordinador_mantenimiento', 'coordinador'}
+
 PRUEBAS = ['Pendiente', 'En prueba', 'Aprobada', 'Fallida', 'No requerida']
 
 class ProgramaFinSemana(Base):
@@ -58,7 +60,7 @@ def puede_publicar(u):
     return bool(u.get('es_admin') or u.get('rol') in ('programador_mantenimiento','programador'))
 
 def puede_chat(u):
-    return bool(u.get('es_admin') or u.get('rol')=='supervisor')
+    return bool(u.get('es_admin') or u.get('rol') in ROLES_AVANCE)
 
 def _programa(s,u,n,bloquear=False):
     p=s.get(ProgramaFinSemana,n,with_for_update=bloquear)
@@ -67,7 +69,8 @@ def _programa(s,u,n,bloquear=False):
     return p
 
 def puede_actualizar(u,d):
-    return gestor(u) or (u.get('rol')=='supervisor' and u.get('correo')==d.get('supervisor'))
+    # Center access is checked by _programa before any write. Assignment is informational.
+    return puede_chat(u)
 
 def _fila(t):
     return dict(id=t.id,version=t.version,**json.loads(t.datos),historial=json.loads(t.historial))
@@ -87,8 +90,8 @@ def _validar_plan(s,d,centro):
     for k in ('descripcion','linea','area','supervisor'):
         if not str(d.get(k,'')).strip():raise ValueError('Completa '+k+' en cada trabajo.')
     responsable=_usuario(s,d['supervisor'])
-    if responsable.get('rol')!='supervisor' or str(responsable.get('centro'))!=centro:
-        raise ValueError('Asigna un supervisor activo del centro elegido.')
+    if responsable.get('rol') not in ROLES_AVANCE or str(responsable.get('centro'))!=centro:
+        raise ValueError('Asigna un supervisor o coordinador de mantenimiento activo del centro elegido.')
     resultado={k:str(d.get(k,'')).strip() for k in ('descripcion','linea','area','equipo','supervisor','referencia_pdf','ot','ejecutor','inicio_plan','fin_plan')}
     if d.get('etapas'):resultado['etapas']=validar_plan(d['etapas'])
     return resultado
@@ -135,7 +138,7 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
         t=s.get(TrabajoFinSemana,trabajo,with_for_update=True)
         if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
         d=json.loads(t.datos)
-        if not puede_actualizar(u,d):raise ValueError('Solo el supervisor asignado o el administrador puede actualizar este trabajo.')
+        if not puede_actualizar(u,d):raise ValueError('Solo supervisores, coordinadores de mantenimiento o administración pueden actualizar trabajos del centro.')
         if t.version!=version:raise ValueError('Otro usuario actualizó el trabajo. Recarga antes de guardar; tus datos no se sobrescribieron.')
         if len(d['fotos'])+len(fotos)>12:raise ValueError('Límite de 12 fotos por trabajo.')
         for nombre,contenido in fotos:
@@ -143,7 +146,7 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
         if cambio.get('plan_nuevo'):
             if d.get('etapas'):raise ValueError('El trabajo ya tiene un plan revisado. Recarga la propuesta.')
             d['etapas']=validar_plan(cambio.get('etapas',[]))
-            d['plan_origen']='Propuesto por GearBot y confirmado por el supervisor'
+            d['plan_origen']='Propuesto por GearBot y confirmado por el responsable de turno'
         origen=cambio.get('origen_avance')
         if origen=='estimado_etapas':
             plan=d.get('etapas') or plan_base(d['descripcion'])
@@ -188,7 +191,7 @@ def cerrar_turno(correo,n,fecha,turno,comentario,clave):
     if turno not in ('Día','Noche'):raise ValueError('Turno inválido.')
     with Session(engine) as s,s.begin():
         u=_usuario(s,correo);p=_programa(s,u,n,True)
-        if u.get('rol')!='supervisor' and not gestor(u):raise ValueError('No puedes registrar cierres de turno.')
+        if not puede_chat(u):raise ValueError('No puedes registrar cierres de turno.')
         previo=s.scalar(select(CierreTrabajo).where(CierreTrabajo.clave==clave))
         if previo:
             if previo.programa!=n:raise ValueError('Clave de cierre inválida.')

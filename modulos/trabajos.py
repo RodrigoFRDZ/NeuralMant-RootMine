@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 from database import trabajos as db
 from database.usuarios import cargar_usuarios, cargar_centros
-from modulos.programacion_pdf import texto_pdf, extraer_trabajos
+from modulos.programacion_pdf import texto_pdf, extraer_trabajos, asignar_supervisores
 from reportes.trabajos import generar_pdf
 from ia.cliente import mensaje_amigable_ia
 
@@ -26,21 +26,25 @@ def _cargar(u):
     archivo=st.file_uploader('Programación PDF (hasta 10 MB)',type=['pdf'],key='trab_pdf')
     if not archivo:return
     contenido=archivo.getvalue();huella=hashlib.sha256(contenido).hexdigest()
-    filas_key='trab_import_'+huella
+    filas_key='trab_import_'+huella+'_'+centro
     st.session_state.setdefault(filas_key,[])
+    personas=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol') in db.ROLES_AVANCE and str(x.get('centro'))==str(centro)]
     if st.button('Extraer trabajos del PDF con GearBot'):
         try:
-            with st.spinner('Leyendo la programación…'):st.session_state[filas_key]=extraer_trabajos(texto_pdf(contenido))
+            with st.spinner('Leyendo la programación…'):
+                nuevas=asignar_supervisores(extraer_trabajos(texto_pdf(contenido)),personas)
+                st.session_state[filas_key]=nuevas
+                st.session_state['trab_import_revision_'+huella]=st.session_state.get('trab_import_revision_'+huella,0)+1
+            st.success(f'Se extrajeron {len(nuevas)} trabajos. Revisa la tabla antes de publicar.')
         except Exception as exc:
             st.warning(mensaje_amigable_ia(exc) or 'No fue posible extraer los trabajos. Puedes ingresar las filas manualmente o volver a intentar. '+(str(exc) if isinstance(exc,ValueError) else ''))
     with st.expander('Texto del PDF para verificar'):
         try:st.text(texto_pdf(contenido))
         except ValueError as exc:st.warning(str(exc))
-    personas=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol')=='supervisor' and str(x.get('centro'))==str(centro)]
-    st.caption('Revisa las filas antes de publicar. Completa área, línea y supervisor; no se publica directamente lo propuesto por la IA.')
+    st.caption('Revisa las filas antes de publicar. El referente se asigna por área cuando hay una única cuenta activa del centro. Supervisores y coordinadores pueden actualizar todos los trabajos del centro. Completa las líneas que no aparecen en el PDF y verifica cada asignación.')
     st.dataframe([{'Supervisor':x['nombre'],'Correo para asignación':x['correo'],'Área':x.get('area','')} for x in personas],hide_index=True)
     filas=st.data_editor(pd.DataFrame(st.session_state[filas_key],columns=COLUMNAS),num_rows='dynamic',hide_index=True,
-        key='trab_editor_'+huella+'_'+centro,column_config={'supervisor':st.column_config.SelectboxColumn('Supervisor',options=[x['correo'] for x in personas])})
+        key='trab_editor_'+huella+'_'+centro+'_'+str(st.session_state.get('trab_import_revision_'+huella,0)),column_config={'supervisor':st.column_config.SelectboxColumn('Supervisor / coordinador referente',options=[x['correo'] for x in personas])})
     if st.button('Publicar programa revisado',type='primary'):
         try:
             lista=filas.fillna('').to_dict('records')
@@ -82,7 +86,7 @@ def _actualizar(u,n,ident_fijo=None):
     filas=db.trabajos(u['correo'],n)
     if not filas:st.info('Sin trabajos.');return
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
-    if not opciones:st.info('No tienes trabajos asignados para actualizar en este programa. Puedes consultar el tablero.');return
+    if not opciones:st.info('Tu cuenta no puede actualizar este programa. Puedes consultar el tablero.');return
     ident=ident_fijo or st.selectbox('Trabajo para actualizar',[d['id'] for d in opciones],format_func=lambda i:next(f"#{i} · {d['linea']} · {d['descripcion']}" for d in opciones if d['id']==i))
     d=next(x for x in opciones if x['id']==ident)
     st.caption(f"Último registro: {_fecha(d['actualizado'])} · {d['autor'] or 'Sin actualización'}")
@@ -97,7 +101,7 @@ def _actualizar(u,n,ident_fijo=None):
     if db.gestor(u):
         # For an administrator viewing another center, use the program's actual center.
         centro_programa=next(p['centro'] for p in db.programas(u['correo']) if p['id']==n)
-        candidatos=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol')=='supervisor' and str(x.get('centro'))==centro_programa]
+        candidatos=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol') in db.ROLES_AVANCE and str(x.get('centro'))==centro_programa]
         correos=[x['correo'] for x in candidatos]
         if correos:
             with st.expander('Cambiar supervisor para el siguiente turno'):
@@ -149,11 +153,14 @@ def _plan_etapas(u,n,d):
 
 def _chat(u,n):
     if not db.puede_chat(u):
-        st.error('Solo supervisores o administración pueden registrar mensajes.');return
+        st.error('Solo supervisores, coordinadores de mantenimiento o administración pueden registrar mensajes.');return
     filas=db.trabajos(u['correo'],n)
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
     if not opciones:
-        st.info('No tienes trabajos asignados en esta programación.');return
+        st.info('No hay trabajos disponibles para actualizar en esta programación.');return
+    st.caption('Puedes actualizar cualquier trabajo del centro. La asignación indica el referente; cada registro conserva quién lo actualizó.')
+    area=st.selectbox('Área de trabajos',['Todas las áreas']+sorted({d['area'] for d in opciones}),key='trab_chat_area')
+    if area!='Todas las áreas':opciones=[d for d in opciones if d['area']==area]
     ident=st.selectbox('Trabajo de la bitácora',[d['id'] for d in opciones],key='trab_chat_id',
         format_func=lambda i:next(f"{d['area']} · OT {d.get('ot') or '#'+str(i)} · {d['descripcion']}" for d in opciones if d['id']==i))
     d=next(x for x in opciones if x['id']==ident)
@@ -200,7 +207,7 @@ def _chat(u,n):
             a,b=st.columns(2)
             if a.button('Confirmar actualización',key=f'trab_chat_confirmar_{ident}',disabled=obsoleta,type='primary'):
                 try:
-                    db.actualizar(u['correo'],n,ident,propuesta['version'],propuesta['cambio'],mensaje='Actualización revisada y confirmada por el supervisor.')
+                    db.actualizar(u['correo'],n,ident,propuesta['version'],propuesta['cambio'],mensaje='Actualización revisada y confirmada por el responsable de turno.')
                     st.session_state.pop(clave,None);st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.session_state['trab_flash']='Estado actualizado.';st.rerun()
                 except ValueError as exc:st.error(str(exc))
             if b.button('Conservar solo el mensaje',key=f'trab_chat_descartar_{ident}'):
@@ -214,7 +221,7 @@ def _chat(u,n):
             cambio['avance']=None if accion=='Iniciado' else 100
             cambio['origen_avance']='estado_supervisor'
             try:
-                db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el supervisor.')
+                db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el responsable de turno.')
                 st.session_state.pop(clave,None);st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.rerun()
             except ValueError as exc:st.error(str(exc))
     if db.gestor(u):_plan_etapas(u,n,d)
@@ -228,7 +235,7 @@ def _reportes(u,p):
     fecha=st.date_input('Fecha del turno',hoy)
     turno=st.selectbox('Turno',['Día','Noche'])
     comentario=st.text_area('Resumen de entrega / coordinaciones pendientes')
-    if u.get('rol')=='supervisor' or db.gestor(u):
+    if db.puede_chat(u):
         clave=f'trab_cierre_clave_{n}_{fecha}_{turno}'
         st.session_state.setdefault(clave,str(uuid4()))
         if st.button('Registrar cierre de turno',type='primary'):

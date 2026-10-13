@@ -1,6 +1,6 @@
 import streamlit as st
 
-from database.llaves_acceso import eliminar_llave, tiene_llave
+from database.llaves_acceso import eliminar_llave, tiene_llave, requiere_llave
 from database.repositorio_adf import listar_adf, eliminar_adf_completo, listar_borradores_globales, reasignar_borrador_adf
 from database.usuarios import (
     actualizar_usuario,
@@ -12,7 +12,7 @@ from database.usuarios import (
     ROLES_TECNICOS,
 )
 
-ROLES = ["tecnico", "senior", "programador_mantenimiento", "ingeniero_confiabilidad", "ingeniero_procesos", "supervisor", "jefe", "subgerente", "analizador_materiales"]
+ROLES = ["tecnico", "senior", "programador_mantenimiento", "ingeniero_confiabilidad", "ingeniero_procesos", "supervisor", "coordinador_mantenimiento", "jefe", "subgerente", "analizador_materiales"]
 ROL_ADMIN = "ingeniero"
 
 ETIQUETA_ROL = {
@@ -20,7 +20,7 @@ ETIQUETA_ROL = {
     "programador_mantenimiento": "Programador de Mantenimiento",
     "ingeniero_confiabilidad": "Ingeniero de Confiabilidad",
     "ingeniero_procesos": "Ingeniero de Procesos",
-    "supervisor": "Supervisor", "jefe": "Jefe",
+    "supervisor": "Supervisor", "coordinador_mantenimiento": "Coordinador de Mantenimiento", "jefe": "Jefe",
     "ingeniero": "Ingeniero de Mantenimiento", "subgerente": "Subgerente", "analizador_materiales": "Analizador de Materiales",
 }
 AREAS_BASE = ["FAENA", "PROCESOS", "CONGELADO", "ELABORADOS", "SERVICIOS", "GENERACIÓN", "SADEMA", "ADM-DESP", "PLANIFICACIÓN", "INGENIERÍA"]
@@ -56,7 +56,7 @@ def mostrar_administracion() -> None:
 
     usuarios = cargar_todos_usuarios()
     activos = sum(1 for u in usuarios if u.get("activo", True))
-    validadores = sum(1 for u in usuarios if (u.get("rol") or "").lower() in {"supervisor", "jefe", "ingeniero", "subgerente", "analizador_materiales"} and u.get("activo", True))
+    validadores = sum(1 for u in usuarios if requiere_llave(u) and u.get("activo", True))
     c1, c2, c3 = st.columns(3)
     c1.metric("Cuentas registradas", len(usuarios))
     c2.metric("Activas", activos)
@@ -204,7 +204,7 @@ def mostrar_administracion() -> None:
         st.info("Las llaves nunca se muestran. Al restablecer una, se elimina la actual y el validador deberá crear una nueva en su próximo ingreso.")
         validadores_lista = [
             u for u in usuarios
-            if (u.get("rol") or "").lower() in {"supervisor", "jefe", "ingeniero", "subgerente", "analizador_materiales"} and u.get("activo", True)
+            if requiere_llave(u) and u.get("activo", True)
         ]
         validadores_lista.sort(key=lambda u: ((u.get("nombre") or ""), (u.get("correo") or "")))
         if not validadores_lista:

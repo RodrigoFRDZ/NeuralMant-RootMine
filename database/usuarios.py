@@ -26,6 +26,8 @@ ETIQUETAS_ROL = {
     "ingeniero_confiabilidad": "Ingeniero de Confiabilidad",
     "ingeniero_procesos": "Ingeniero de Procesos",
     "supervisor": "Supervisor",
+    "coordinador_mantenimiento": "Coordinador de Mantenimiento",
+    "coordinador": "Coordinador de Mantenimiento",
     "jefe": "Jefe",
     "ingeniero": "Ingeniero de Mantenimiento",
     "subgerente": "Subgerente",
