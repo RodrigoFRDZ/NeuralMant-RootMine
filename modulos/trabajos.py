@@ -5,12 +5,12 @@ from uuid import uuid4
 import pandas as pd
 import streamlit as st
 from database import trabajos as db
-from database.usuarios import cargar_usuarios, cargar_centros
-from modulos.programacion_pdf import texto_pdf, extraer_trabajos, asignar_supervisores
+from database.usuarios import cargar_centros
+from modulos.programacion_pdf import texto_pdf, extraer_trabajos
 from reportes.trabajos import generar_pdf
 from ia.cliente import mensaje_amigable_ia
 
-COLUMNAS=['ot','descripcion','linea','area','equipo','ejecutor','inicio_plan','fin_plan','supervisor','referencia_pdf']
+COLUMNAS=['ot','descripcion','linea','area','equipo','ejecutor','inicio_plan','fin_plan','referencia_pdf']
 
 def _fecha(v):
     return datetime.fromisoformat(v).replace(tzinfo=ZoneInfo('UTC')).astimezone(ZoneInfo('America/Santiago')).strftime('%d/%m %H:%M') if v else 'Sin actualización'
@@ -28,11 +28,10 @@ def _cargar(u):
     contenido=archivo.getvalue();huella=hashlib.sha256(contenido).hexdigest()
     filas_key='trab_import_'+huella+'_'+centro
     st.session_state.setdefault(filas_key,[])
-    personas=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol') in db.ROLES_AVANCE and str(x.get('centro'))==str(centro)]
     if st.button('Extraer trabajos del PDF con GearBot'):
         try:
             with st.spinner('Leyendo la programación…'):
-                nuevas=asignar_supervisores(extraer_trabajos(texto_pdf(contenido)),personas)
+                nuevas=extraer_trabajos(texto_pdf(contenido))
                 st.session_state[filas_key]=nuevas
                 st.session_state['trab_import_revision_'+huella]=st.session_state.get('trab_import_revision_'+huella,0)+1
             st.success(f'Se extrajeron {len(nuevas)} trabajos. Revisa la tabla antes de publicar.')
@@ -41,11 +40,11 @@ def _cargar(u):
     with st.expander('Texto del PDF para verificar'):
         try:st.text(texto_pdf(contenido))
         except ValueError as exc:st.warning(str(exc))
-    st.caption('Revisa las filas antes de publicar. El referente se asigna por área cuando hay una única cuenta activa del centro. Supervisores y coordinadores pueden actualizar todos los trabajos del centro. Completa las líneas que no aparecen en el PDF y verifica cada asignación.')
-    st.dataframe([{'Supervisor':x['nombre'],'Correo para asignación':x['correo'],'Área':x.get('area','')} for x in personas],hide_index=True)
+    st.caption('Revisa las filas antes de publicar. Área y descripción son obligatorias; línea y equipo son opcionales. Cualquier supervisor o coordinador del centro puede registrar avances.')
     filas=st.data_editor(pd.DataFrame(st.session_state[filas_key],columns=COLUMNAS),num_rows='dynamic',hide_index=True,
-        key='trab_editor_'+huella+'_'+centro+'_'+str(st.session_state.get('trab_import_revision_'+huella,0)),column_config={'supervisor':st.column_config.SelectboxColumn('Supervisor / coordinador referente',options=[x['correo'] for x in personas])})
-    if st.button('Publicar programa revisado',type='primary'):
+        key='trab_editor_'+huella+'_'+centro+'_'+str(st.session_state.get('trab_import_revision_'+huella,0)),column_config={'area':st.column_config.TextColumn('Área',required=True),'descripcion':st.column_config.TextColumn('Descripción',required=True),'linea':st.column_config.TextColumn('Línea (opcional)'),'equipo':st.column_config.TextColumn('Equipo (opcional)')})
+    st.caption('Al publicar una programación posterior, se cerrará la anterior de este centro y se conservará solo su PDF final por tres meses. Cargar o extraer el archivo todavía no la cierra.')
+    if st.button('Publicar programa revisado y cerrar el anterior',type='primary'):
         try:
             lista=filas.fillna('').to_dict('records')
             n=db.crear_programa(u['correo'],titulo,centro,inicio.isoformat(),fin.isoformat(),archivo.name,contenido,lista)
@@ -75,11 +74,11 @@ def _tablero(u,n):
     st.subheader('Líneas y preparación para la partida')
     st.dataframe(db.lineas(filas),hide_index=True)
     st.caption('Lista según registros exige todos los trabajos terminados, pruebas aprobadas o no requeridas con motivo, y sin pendientes. El avance medio no pondera horas ni complejidad.')
-    buscar=st.text_input('Buscar trabajo, línea, equipo o supervisor',key='trab_buscar')
+    buscar=st.text_input('Buscar trabajo, área, línea o equipo',key='trab_buscar')
     estado=st.selectbox('Estado',['Todos']+db.ESTADOS,key='trab_filtro_estado')
-    mine=st.checkbox('Solo mis trabajos',key='trab_mios')
-    vista=[d for d in filas if (estado=='Todos' or estado==d['estado']) and (not mine or d['supervisor']==u['correo']) and buscar.lower() in ' '.join(str(d.get(k,'')) for k in COLUMNAS).lower()]
-    st.dataframe([{'ID':d['id'],'Trabajo':d['descripcion'],'Línea':d['linea'],'Supervisor':d['supervisor'],'Estado':d['estado'],'Avance %':d['avance'],'Origen del avance':{'estimado_etapas':'Estimado por etapas','informado_supervisor':'Informado por supervisor','estado_supervisor':'Estado confirmado por supervisor'}.get(d.get('origen_avance'),'Estado inicial / anterior'),'Prueba':d['prueba'],'Pendientes':d['pendiente'],'Hallazgos':d['hallazgos'],'Último mensaje':d.get('ultimo_mensaje',''),'Última actualización':_fecha(d['actualizado'])} for d in vista],hide_index=True)
+    mine=st.checkbox('Solo trabajos que yo actualicé',key='trab_mios')
+    vista=[d for d in filas if (estado=='Todos' or estado==d['estado']) and (not mine or any(h.get('usuario')==u['correo'] for h in d.get('historial',[]))) and buscar.lower() in ' '.join(str(d.get(k,'')) for k in COLUMNAS).lower()]
+    st.dataframe([{'ID':d['id'],'Trabajo':d['descripcion'],'Línea':d['linea'],'Área':d['area'],'Actualizado por':d.get('autor') or 'Sin actualización','Estado':d['estado'],'Avance %':d['avance'],'Origen del avance':{'estimado_etapas':'Estimado por etapas','informado_supervisor':'Informado por supervisor','estado_supervisor':'Estado confirmado por supervisor'}.get(d.get('origen_avance'),'Estado inicial / anterior'),'Prueba':d['prueba'],'Pendientes':d['pendiente'],'Hallazgos':d['hallazgos'],'Último mensaje':d.get('ultimo_mensaje',''),'Última actualización':_fecha(d['actualizado'])} for d in vista],hide_index=True)
 
 
 def _actualizar(u,n,ident_fijo=None):
@@ -98,19 +97,6 @@ def _actualizar(u,n,ident_fijo=None):
         for k in list(st.session_state):
             if str(k).startswith(f'trab_form_{ident}_'):st.session_state.pop(k,None)
         st.rerun()
-    if db.gestor(u):
-        # For an administrator viewing another center, use the program's actual center.
-        centro_programa=next(p['centro'] for p in db.programas(u['correo']) if p['id']==n)
-        candidatos=[x for x in cargar_usuarios() if x.get('activo',True) and x.get('rol') in db.ROLES_AVANCE and str(x.get('centro'))==centro_programa]
-        correos=[x['correo'] for x in candidatos]
-        if correos:
-            with st.expander('Cambiar supervisor para el siguiente turno'):
-                responsable=st.selectbox('Supervisor asignado',correos,index=correos.index(d['supervisor']) if d['supervisor'] in correos else 0,key=f'trab_asignar_{ident}')
-                if st.button('Guardar asignación',key=f'trab_reasignar_{ident}'):
-                    try:
-                        db.reasignar(u['correo'],n,ident,d['version'],responsable)
-                        st.session_state.pop(revision_key,None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.session_state['trab_flash']='Supervisor actualizado.';st.rerun()
-                    except ValueError as exc:st.error(str(exc))
     pref=f'trab_form_{ident}_' 
     with st.form(pref):
         a,b=st.columns(2)
@@ -158,7 +144,7 @@ def _chat(u,n):
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
     if not opciones:
         st.info('No hay trabajos disponibles para actualizar en esta programación.');return
-    st.caption('Puedes actualizar cualquier trabajo del centro. La asignación indica el referente; cada registro conserva quién lo actualizó.')
+    st.caption('Puedes actualizar cualquier trabajo del centro. Cada registro conserva el nombre, correo y fecha de quien lo actualizó.')
     area=st.selectbox('Área de trabajos',['Todas las áreas']+sorted({d['area'] for d in opciones}),key='trab_chat_area')
     if area!='Todas las áreas':opciones=[d for d in opciones if d['area']==area]
     ident=st.selectbox('Trabajo de la bitácora',[d['id'] for d in opciones],key='trab_chat_id',
@@ -234,13 +220,14 @@ def _reportes(u,p):
     st.subheader('Entrega y reporte de turno')
     fecha=st.date_input('Fecha del turno',hoy)
     turno=st.selectbox('Turno',['Día','Noche'])
-    comentario=st.text_area('Resumen de entrega / coordinaciones pendientes')
+    comentario=st.text_area('Comentarios / resumen de entrega / coordinaciones pendientes')
+    sugerencias=st.text_area('Sugerencias para el siguiente turno o fin de semana (opcional)')
     if db.puede_chat(u):
         clave=f'trab_cierre_clave_{n}_{fecha}_{turno}'
         st.session_state.setdefault(clave,str(uuid4()))
         if st.button('Registrar cierre de turno',type='primary'):
             try:
-                db.cerrar_turno(u['correo'],n,fecha.isoformat(),turno,comentario,st.session_state[clave]);st.session_state.pop(clave,None);st.success('Cierre guardado. El programa sigue abierto para nuevas actualizaciones.')
+                db.cerrar_turno(u['correo'],n,fecha.isoformat(),turno,comentario,st.session_state[clave],sugerencias=sugerencias);st.session_state.pop(clave,None);st.success('Cierre guardado. El programa sigue abierto para nuevas actualizaciones.')
             except ValueError as exc:st.error(str(exc))
     lista=db.cierres(u['correo'],n)
     fotos=st.checkbox('Incluir hasta las 2 últimas fotos de cada trabajo',value=False)
@@ -249,8 +236,18 @@ def _reportes(u,p):
         corte=next(x for x in lista if x['id']==elegido)
         st.download_button('Descargar reporte PDF del cierre',generar_pdf(u['correo'],n,corte,fotos),file_name=f'Reporte_turno_{n}_{elegido}.pdf',mime='application/pdf')
     filas=db.trabajos(u['correo'],n)
-    actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha.isoformat(),turno=turno,comentario=comentario,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas))
-    st.download_button('Descargar estado actual (sin cierre)',generar_pdf(u['correo'],n,actual,fotos),file_name=f'Estado_actual_{n}.pdf',mime='application/pdf')
+    actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha.isoformat(),turno=turno,comentario=comentario,sugerencias=sugerencias,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas))
+    st.caption('Generar informe no cierra el programa. Los comentarios y sugerencias de supervisores, coordinadores o administración también quedan registrados para el informe final.')
+    if st.button('Generar informe',type='primary'):
+        try:
+            pdf=generar_pdf(u['correo'],n,actual,fotos)
+            if db.puede_chat(u):
+                db.cerrar_turno(u['correo'],n,fecha.isoformat(),turno,comentario,str(uuid4()),sugerencias=sugerencias)
+            st.session_state[f'trab_informe_{n}']=pdf
+            st.success('Informe generado. La programación sigue abierta.')
+        except ValueError as exc:st.error(str(exc))
+    if st.session_state.get(f'trab_informe_{n}'):
+        st.download_button('Descargar informe PDF generado',st.session_state[f'trab_informe_{n}'],file_name=f'Informe_avance_{n}.pdf',mime='application/pdf')
 
 
 def mostrar_trabajos():
@@ -275,8 +272,14 @@ def mostrar_trabajos():
     if not planes:st.info('No hay programaciones publicadas para tu centro. Administración puede cargar el PDF y revisar sus trabajos.');return
     ids=[p['id'] for p in planes]
     if st.session_state.get('trab_programa') not in ids:st.session_state.pop('trab_programa',None)
-    n=st.selectbox('Programación',ids,key='trab_programa',format_func=lambda i:next(f"{p['titulo']} · {p['inicio']} a {p['fin']}" for p in planes if p['id']==i))
+    n=st.selectbox('Programación',ids,key='trab_programa',format_func=lambda i:next(f"{p['titulo']} · {p['inicio']} a {p['fin']} · {'Cerrado' if p.get('cerrado') else 'Vigente'}" for p in planes if p['id']==i))
     p=next(x for x in planes if x['id']==n)
+    if p.get('cerrado'):
+        st.info('Programa cerrado: solo consulta. Se conserva únicamente el informe final PDF durante tres meses.')
+        st.caption('Disponible hasta: '+p.get('vence','')[:10])
+        pdf=db.historico_pdf(u['correo'],n)
+        st.download_button('Consultar / descargar informe final PDF',pdf,file_name=f'Informe_final_{n}.pdf',mime='application/pdf')
+        return
     with st.expander('Programación original'):
         st.download_button('Descargar PDF original',db.fuente(u['correo'],n),file_name='Programacion_original.pdf',mime='application/pdf')
     if vista=='Tablero':_tablero(u,n)

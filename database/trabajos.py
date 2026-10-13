@@ -1,8 +1,8 @@
 """Programación, bitácora, evidencia y cierres inmutables de turno."""
-import hashlib, json
-from datetime import datetime
+import hashlib, json, calendar, logging, threading
+from datetime import datetime, date
 from io import BytesIO
-from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select
+from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select, delete
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from PIL import Image
 from ia.etapas_trabajos import validar_plan, plan_base, calcular
@@ -53,6 +53,81 @@ class CierreTrabajo(Base):
     datos: Mapped[str]=mapped_column(Text)
 
 
+class HistoricoTrabajo(Base):
+    __tablename__='historico_trabajo'
+    programa: Mapped[int]=mapped_column(ForeignKey('programa_fin_semana.id'),primary_key=True)
+    pdf: Mapped[bytes]=mapped_column(LargeBinary)
+    cerrado: Mapped[datetime]=mapped_column(DateTime)
+    vence: Mapped[datetime]=mapped_column(DateTime,index=True)
+
+
+def _tres_meses(fecha):
+    mes=fecha.month+3;anio=fecha.year+(mes-1)//12;mes=(mes-1)%12+1
+    return fecha.replace(year=anio,month=mes,day=min(fecha.day,calendar.monthrange(anio,mes)[1]))
+
+def _limpiar_historial(s,ahora):
+    vencidos=list(s.scalars(select(HistoricoTrabajo).where(HistoricoTrabajo.vence<=ahora).with_for_update()))
+    for h in vencidos:
+        n=h.programa
+        s.delete(h);s.flush()
+        s.execute(delete(ProgramaFinSemana).where(ProgramaFinSemana.id==n))
+    return len(vencidos)
+
+def limpiar_historial():
+    with Session(engine) as s,s.begin():return _limpiar_historial(s,datetime.utcnow())
+
+
+_limpieza_lock=threading.Lock()
+_limpieza_iniciada=False
+
+def iniciar_limpieza_historial():
+    """Hourly cleanup while the Streamlit process is running; reads also clean on wake-up."""
+    global _limpieza_iniciada
+    with _limpieza_lock:
+        if _limpieza_iniciada:return
+        _limpieza_iniciada=True
+    def tarea():
+        espera=threading.Event()
+        while True:
+            try:limpiar_historial()
+            except Exception:logging.getLogger(__name__).exception('No se pudo limpiar el histórico de trabajos')
+            espera.wait(3600)
+    threading.Thread(target=tarea,name='limpieza-historico-trabajos',daemon=True).start()
+
+def _editable(s,n):
+    if s.get(HistoricoTrabajo,n):raise ValueError('Este programa está cerrado. Consulta o descarga su PDF histórico.')
+
+def _archivar(s,p,u):
+    from reportes.trabajos import render_pdf
+    if s.get(HistoricoTrabajo,p.id):return
+    filas=[_fila(t) for t in s.scalars(select(TrabajoFinSemana).where(TrabajoFinSemana.programa==p.id).order_by(TrabajoFinSemana.id))]
+    entregas=[json.loads(c.datos) for c in s.scalars(select(CierreTrabajo).where(CierreTrabajo.programa==p.id).order_by(CierreTrabajo.id))]
+    fotos={}
+    for d in filas:
+        fotos[d['id']]=[]
+        for f in s.scalars(select(FotoTrabajo).where(FotoTrabajo.trabajo==d['id']).order_by(FotoTrabajo.id)):
+            # Keep photographic evidence inside the final PDF, at a bounded display resolution.
+            imagen=Image.open(BytesIO(f.contenido)).convert('RGB');imagen.thumbnail((1000,1000))
+            out=BytesIO();imagen.save(out,format='JPEG',quality=70)
+            fotos[d['id']].append(dict(contenido=out.getvalue(),nombre=f.nombre,usuario=f.usuario,fecha=f.fecha))
+    ahora=datetime.utcnow()
+    corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.',sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),entregas=entregas,final=True)
+    pdf=render_pdf(corte,fotos)
+    s.add(HistoricoTrabajo(programa=p.id,pdf=pdf,cerrado=ahora,vence=_tres_meses(ahora)));s.flush()
+    ids=select(TrabajoFinSemana.id).where(TrabajoFinSemana.programa==p.id)
+    s.execute(delete(FotoTrabajo).where(FotoTrabajo.trabajo.in_(ids)))
+    s.execute(delete(CierreTrabajo).where(CierreTrabajo.programa==p.id))
+    s.execute(delete(TrabajoFinSemana).where(TrabajoFinSemana.programa==p.id))
+    p.pdf=b''  # Only the final report and minimal index metadata remain.
+
+def historico_pdf(correo,n):
+    with Session(engine) as s,s.begin():
+        u=_usuario(s,correo);_limpiar_historial(s,datetime.utcnow());_programa(s,u,n)
+        h=s.get(HistoricoTrabajo,n)
+        if not h:raise ValueError('No hay PDF histórico para este programa.')
+        return h.pdf
+
+
 def gestor(u):
     return bool(u.get('es_admin'))
 
@@ -76,10 +151,11 @@ def _fila(t):
     return dict(id=t.id,version=t.version,**json.loads(t.datos),historial=json.loads(t.historial))
 
 def programas(correo):
-    with Session(engine) as s:
-        u=_usuario(s,correo); q=select(ProgramaFinSemana).order_by(ProgramaFinSemana.id.desc())
+    with Session(engine) as s,s.begin():
+        u=_usuario(s,correo);_limpiar_historial(s,datetime.utcnow()); q=select(ProgramaFinSemana).order_by(ProgramaFinSemana.id.desc())
         if not u.get('es_admin'):q=q.where(ProgramaFinSemana.centro==str(u.get('centro')))
-        return [dict(id=p.id,titulo=p.titulo,centro=p.centro,inicio=p.inicio,fin=p.fin,fuente=p.fuente) for p in s.scalars(q)]
+        archivos={h.programa:h for h in s.scalars(select(HistoricoTrabajo))}
+        return [dict(id=p.id,titulo=p.titulo,centro=p.centro,inicio=p.inicio,fin=p.fin,fuente=p.fuente,cerrado=p.id in archivos,vence=archivos[p.id].vence.isoformat() if p.id in archivos else '') for p in s.scalars(q)]
 
 def trabajos(correo,n):
     with Session(engine) as s:
@@ -87,12 +163,9 @@ def trabajos(correo,n):
         return [_fila(t) for t in s.scalars(select(TrabajoFinSemana).where(TrabajoFinSemana.programa==n).order_by(TrabajoFinSemana.id))]
 
 def _validar_plan(s,d,centro):
-    for k in ('descripcion','linea','area','supervisor'):
+    for k in ('descripcion','area'):
         if not str(d.get(k,'')).strip():raise ValueError('Completa '+k+' en cada trabajo.')
-    responsable=_usuario(s,d['supervisor'])
-    if responsable.get('rol') not in ROLES_AVANCE or str(responsable.get('centro'))!=centro:
-        raise ValueError('Asigna un supervisor o coordinador de mantenimiento activo del centro elegido.')
-    resultado={k:str(d.get(k,'')).strip() for k in ('descripcion','linea','area','equipo','supervisor','referencia_pdf','ot','ejecutor','inicio_plan','fin_plan')}
+    resultado={k:str(d.get(k,'')).strip() for k in ('descripcion','linea','area','equipo','referencia_pdf','ot','ejecutor','inicio_plan','fin_plan')}
     if d.get('etapas'):resultado['etapas']=validar_plan(d['etapas'])
     return resultado
 
@@ -108,10 +181,19 @@ def crear_programa(correo,titulo,centro,inicio,fin,nombre,pdf,filas):
     with Session(engine) as s,s.begin():
         u=_usuario(s,correo)
         if not puede_publicar(u) or not (u.get('es_admin') or str(u.get('centro'))==str(centro)):raise ValueError('No puedes publicar este programa.')
+        _limpiar_historial(s,datetime.utcnow())
         datos=[_validar_plan(s,d,str(centro)) for d in filas]
         firma=hashlib.sha256(pdf+str(centro).encode()+inicio.encode()+fin.encode()).hexdigest()
         anterior=s.scalar(select(ProgramaFinSemana).where(ProgramaFinSemana.firma==firma))
         if anterior:raise ValueError(f'Este PDF ya fue publicado para esas fechas: programa #{anterior.id}.')
+        # Lock a stable center row, including the first publication, to serialize publishers.
+        from database.modelos import UsuarioRootMine
+        s.scalar(select(UsuarioRootMine).where(UsuarioRootMine.centro==str(centro)).order_by(UsuarioRootMine.id).limit(1).with_for_update())
+        previos=list(s.scalars(select(ProgramaFinSemana).where(ProgramaFinSemana.centro==str(centro)).order_by(ProgramaFinSemana.id).with_for_update()))
+        abiertos=[previo for previo in previos if not s.get(HistoricoTrabajo,previo.id)]
+        if abiertos and inicio<=max(previo.inicio for previo in abiertos):
+            raise ValueError('La nueva programación debe comenzar después de la programación vigente.')
+        for previo in abiertos:_archivar(s,previo,u)
         p=ProgramaFinSemana(titulo=titulo.strip(),centro=str(centro),inicio=inicio,fin=fin,fuente=nombre[:240],firma=firma,pdf=pdf,creador=correo)
         s.add(p);s.flush()
         for d in datos:
@@ -134,7 +216,7 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
     if estado=='Detenido' and not cambio.get('pendiente','').strip():raise ValueError('Indica qué está bloqueando el trabajo.')
     if prueba in ('Aprobada','Fallida','No requerida') and not cambio.get('detalle_prueba','').strip():raise ValueError('Registra resultado/evidencia o motivo por el que no requiere prueba.')
     with Session(engine) as s,s.begin():
-        u=_usuario(s,correo);_programa(s,u,n,True)
+        u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
         t=s.get(TrabajoFinSemana,trabajo,with_for_update=True)
         if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
         d=json.loads(t.datos)
@@ -160,7 +242,7 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
         for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba'):d[k]=cambio.get(k,'')
         d.update(actualizado=datetime.utcnow().isoformat(),autor=correo)
         if mensaje.strip():d['ultimo_mensaje']=mensaje.strip()
-        h=json.loads(t.historial);h.append(dict(origen_avance=d.get('origen_avance','informado_supervisor'),etapas_confirmadas=d.get('etapas_confirmadas',[]),mensaje=mensaje.strip(),fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos'])))
+        h=json.loads(t.historial);h.append(dict(origen_avance=d.get('origen_avance','informado_supervisor'),etapas_confirmadas=d.get('etapas_confirmadas',[]),mensaje=mensaje.strip(),fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],rol=u.get('rol',''),**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos'])))
         t.datos=json.dumps(d,ensure_ascii=False);t.historial=json.dumps(h,ensure_ascii=False)
         s.flush()
         return t.version
@@ -178,26 +260,26 @@ def fuente(correo,n):
 
 def lineas(filas):
     resultado=[]
-    for linea in sorted({d['linea'] for d in filas}):
-        grupo=[d for d in filas if d['linea']==linea]
+    for area,linea in sorted({(d['area'],d.get('linea') or '') for d in filas}):
+        grupo=[d for d in filas if d['area']==area and (d.get('linea') or '')==linea]
         terminados=all(d['estado']=='Terminado' for d in grupo)
         pruebas=all(d['prueba'] in ('Aprobada','No requerida') for d in grupo)
         bloqueos=any(d['pendiente'].strip() for d in grupo)
         lista=terminados and pruebas and not bloqueos
-        resultado.append(dict(línea=linea,trabajos=len(grupo),avance=round(sum(d['avance'] for d in grupo if d['avance'] is not None)/sum(d['avance'] is not None for d in grupo),1) if any(d['avance'] is not None for d in grupo) else None,sin_porcentaje=sum(d['avance'] is None for d in grupo),partida='Lista según registros' if lista else 'Pendiente',pruebas='Verificadas / no requeridas documentadas' if pruebas else 'Pruebas pendientes o fallidas'))
+        resultado.append(dict(línea=area+' · '+(linea or 'Sin línea informada'),trabajos=len(grupo),avance=round(sum(d['avance'] for d in grupo if d['avance'] is not None)/sum(d['avance'] is not None for d in grupo),1) if any(d['avance'] is not None for d in grupo) else None,sin_porcentaje=sum(d['avance'] is None for d in grupo),partida='Lista según registros' if lista else 'Pendiente',pruebas='Verificadas / no requeridas documentadas' if pruebas else 'Pruebas pendientes o fallidas'))
     return resultado
 
-def cerrar_turno(correo,n,fecha,turno,comentario,clave):
+def cerrar_turno(correo,n,fecha,turno,comentario,clave,sugerencias=""):
     if turno not in ('Día','Noche'):raise ValueError('Turno inválido.')
     with Session(engine) as s,s.begin():
-        u=_usuario(s,correo);p=_programa(s,u,n,True)
+        u=_usuario(s,correo);p=_programa(s,u,n,True);_editable(s,n)
         if not puede_chat(u):raise ValueError('No puedes registrar cierres de turno.')
         previo=s.scalar(select(CierreTrabajo).where(CierreTrabajo.clave==clave))
         if previo:
             if previo.programa!=n:raise ValueError('Clave de cierre inválida.')
             return previo.id
         filas=[_fila(t) for t in s.scalars(select(TrabajoFinSemana).where(TrabajoFinSemana.programa==n).order_by(TrabajoFinSemana.id))]
-        datos=dict(titulo=p.titulo,centro=p.centro,fecha=fecha,turno=turno,comentario=comentario,autor=correo,nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=lineas(filas))
+        datos=dict(titulo=p.titulo,centro=p.centro,fecha=fecha,turno=turno,comentario=comentario,sugerencias=sugerencias,autor=correo,nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=lineas(filas))
         cierre=CierreTrabajo(programa=n,clave=clave,datos=json.dumps(datos,ensure_ascii=False));s.add(cierre);s.flush();return cierre.id
 
 def cierres(correo,n):
@@ -205,24 +287,10 @@ def cierres(correo,n):
         _programa(s,_usuario(s,correo),n)
         return [dict(id=c.id,**json.loads(c.datos)) for c in s.scalars(select(CierreTrabajo).where(CierreTrabajo.programa==n).order_by(CierreTrabajo.id.desc()))]
 
-def reasignar(correo,n,trabajo,version,supervisor):
-    with Session(engine) as s,s.begin():
-        u=_usuario(s,correo);p=_programa(s,u,n,True)
-        if not gestor(u):raise ValueError('Solo gestión puede reasignar el trabajo.')
-        t=s.get(TrabajoFinSemana,trabajo,with_for_update=True)
-        if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
-        if t.version!=version:raise ValueError('El trabajo cambió. Recarga antes de reasignar.')
-        d=json.loads(t.datos);_validar_plan(s,d|{'supervisor':supervisor},p.centro)
-        anterior=d['supervisor'];d['supervisor']=supervisor
-        d.update(actualizado=datetime.utcnow().isoformat(),autor=correo)
-        h=json.loads(t.historial);h.append(dict(fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos']),reasignacion=f'{anterior} → {supervisor}'))
-        t.datos=json.dumps(d,ensure_ascii=False);t.historial=json.dumps(h,ensure_ascii=False)
-
-
 def configurar_etapas(correo,n,trabajo,version,plan):
     plan=validar_plan(plan)
     with Session(engine) as s,s.begin():
-        u=_usuario(s,correo);_programa(s,u,n,True)
+        u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
         if not gestor(u):raise ValueError('Solo administración puede revisar las etapas después de publicar.')
         t=s.get(TrabajoFinSemana,trabajo,with_for_update=True)
         if not t or t.programa!=n or t.version!=version:raise ValueError('El trabajo cambió. Recarga antes de guardar el plan.')
