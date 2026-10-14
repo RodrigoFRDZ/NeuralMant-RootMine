@@ -1,4 +1,6 @@
 """Same-origin offline routes registered at startup through Streamlit App."""
+import gc
+import threading
 from pathlib import Path
 from starlette.routing import Route,Mount
 from starlette.staticfiles import StaticFiles
@@ -43,6 +45,8 @@ def routes(prefijo=''):
     return [Route(base+'/',shell),Route(base+'/sw.js',service_worker),Route(base+'/api/{accion}',api,methods=['GET','POST']),Mount(base+'/assets',app=StaticFiles(directory=ROOT))]
 
 _registradas=False
+_lock=threading.Lock()
+_detalle='Rutas de terreno pendientes de preparación.'
 
 
 def marcar_rutas_registradas():
@@ -51,10 +55,45 @@ def marcar_rutas_registradas():
 
 
 def instalar_en_streamlit():
-    """Compatibility name: routes are registered by app.py before server startup."""
-    return _registradas
+    """Register field routes on the existing server; never start a second runtime."""
+    global _registradas,_detalle
+    with _lock:
+        if _registradas:return True
+        try:
+            from starlette.applications import Starlette
+            from streamlit.runtime import Runtime
+            from streamlit import config
+            if not Runtime.exists():
+                _detalle='El servidor de Streamlit aún no ha iniciado.'
+                return False
+            loop=Runtime.instance()._get_async_objs().eventloop
+            aplicaciones=[obj for obj in gc.get_objects() if isinstance(obj,Starlette) and any(getattr(r,'path','').endswith('/_stcore/health') for r in obj.routes)]
+            if not aplicaciones:
+                _detalle='Este servidor no expone el router compatible con Vista de terreno. El chat conectado sigue disponible.'
+                return False
+            terminado=threading.Event();errores=[]
+            def agregar():
+                try:
+                    prefijo=config.get_option('server.baseUrlPath') or ''
+                    for app in aplicaciones:
+                        base=('/'+prefijo.strip('/') if prefijo else '')+'/neuralmant-campo/'
+                        if not any(getattr(r,'path','')==base for r in app.routes):app.router.routes[:0]=routes(prefijo)
+                except Exception as exc:errores.append(type(exc).__name__)
+                finally:terminado.set()
+            loop.call_soon_threadsafe(agregar)
+            if not terminado.wait(5):
+                _detalle='El servidor no alcanzó a preparar Vista de terreno. Reintenta con conexión.'
+                return False
+            if errores:
+                _detalle='No se pudieron registrar las rutas de Vista de terreno ('+errores[0]+').'
+                return False
+            _registradas=True;_detalle='Rutas de terreno registradas.'
+            return True
+        except Exception as exc:
+            _detalle='No se pudo preparar Vista de terreno ('+type(exc).__name__+'). Revisa que requirements.txt esté actualizado.'
+            return False
 
 
 def diagnostico():
     import streamlit
-    return f'Streamlit {streamlit.__version__}. Inicia con app.py de v4.8.1 y copia neuralmant_ui.py, requirements.txt y la carpeta campo. Reinicia la aplicación después de actualizar dependencias.'
+    return f'Streamlit {streamlit.__version__}: {_detalle}'
