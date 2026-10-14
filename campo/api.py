@@ -1,7 +1,4 @@
-"""Same-origin offline routes. Version-bound Streamlit integration; standard ASGI alternative."""
-import asyncio
-import gc
-import threading
+"""Same-origin offline routes registered at startup through Streamlit App."""
 from pathlib import Path
 from starlette.routing import Route,Mount
 from starlette.staticfiles import StaticFiles
@@ -42,32 +39,22 @@ async def service_worker(request):
     return FileResponse(ROOT/'sw.js',media_type='application/javascript',headers={'Cache-Control':'no-cache'})
 
 def routes(prefijo=''):
-    base=prefijo.rstrip('/')+'/neuralmant-campo'
+    base=('/'+prefijo.strip('/') if prefijo else '')+'/neuralmant-campo'
     return [Route(base+'/',shell),Route(base+'/sw.js',service_worker),Route(base+'/api/{accion}',api,methods=['GET','POST']),Mount(base+'/assets',app=StaticFiles(directory=ROOT))]
 
-_lock=threading.Lock()
-_instalado=False
+_registradas=False
+
+
+def marcar_rutas_registradas():
+    global _registradas
+    _registradas=True
+
 
 def instalar_en_streamlit():
-    """Adds scoped routes to Streamlit 1.65's running Starlette router on its event loop."""
-    global _instalado
-    with _lock:
-        if _instalado:return True
-        try:
-            from starlette.applications import Starlette
-            from streamlit.runtime import Runtime
-            from streamlit import config
-            runtime=Runtime.instance();loop=runtime._get_async_objs().eventloop
-            aplicaciones=[obj for obj in gc.get_objects() if isinstance(obj,Starlette) and any(getattr(r,'path','').endswith('/_stcore/health') for r in obj.routes)]
-            if len(aplicaciones)!=1:return False
-            app=aplicaciones[0];terminado=threading.Event()
-            def agregar():
-                if not getattr(app.state,'neuralmant_campo',False):
-                    prefijo=config.get_option('server.baseUrlPath') or ''
-                    if prefijo:prefijo='/'+prefijo.strip('/')
-                    app.router.routes[:0]=routes(prefijo);app.state.neuralmant_campo=True
-                terminado.set()
-            loop.call_soon_threadsafe(agregar)
-            if not terminado.wait(5):return False
-            _instalado=True;return True
-        except Exception:return False
+    """Compatibility name: routes are registered by app.py before server startup."""
+    return _registradas
+
+
+def diagnostico():
+    import streamlit
+    return f'Streamlit {streamlit.__version__}. Inicia con app.py de v4.8.1 y copia neuralmant_ui.py, requirements.txt y la carpeta campo. Reinicia la aplicación después de actualizar dependencias.'

@@ -53,6 +53,30 @@ def _cargar(u):
             st.session_state['trab_programa']=n;st.session_state['trab_abrir_vista']='Tablero';st.session_state['trab_flash']='Programa publicado.';st.rerun()
         except ValueError as exc:st.error(str(exc))
 
+def preparacion_por_area(filas):
+    """A finished job alone is never evidence of a successful functional test."""
+    resultado=[]
+    for area in sorted({d['area'] for d in filas}):
+        grupo=[d for d in filas if d['area']==area]
+        elegibles=[d for d in grupo if d['estado']=='Terminado' and not d.get('pendiente')]
+        resultado.append(dict(area=area,total=len(grupo),probados=sum(d['prueba']=='Aprobada' for d in elegibles),
+            sin_prueba=sum(d['prueba']=='No requerida' and bool(d.get('detalle_prueba','').strip()) for d in elegibles)))
+    return resultado
+
+
+def pregunta_bitacora(d):
+    from motores.pruebas_trabajos import PREGUNTAS
+    paso=(d.get('dialogo_prueba') or {}).get('paso')
+    if paso:return PREGUNTAS.get(paso,'Cuéntame qué observaste durante la prueba.')
+    if d['estado']=='Terminado':
+        if d['prueba'] in ('Aprobada','No requerida') and not d.get('pendiente'):
+            return 'Este trabajo está listo según los registros. Puedes agregar una novedad o continuar con otro trabajo del área.'
+        return 'La ejecución terminó. ¿Ya se realizaron las pruebas de funcionamiento? Registra también lo que queda pendiente.'
+    if d['estado']=='Detenido':return '¿Qué está impidiendo continuar? Cuéntame qué falta para retomar el trabajo.'
+    if d['estado']=='Pendiente':return '¿Ya comenzó este trabajo? Cuéntame qué encontraste durante el recorrido.'
+    return '¿Qué se ha realizado desde la última revisión? Cuéntame qué falta o si apareció alguna observación.'
+
+
 @st.fragment(run_every='15s')
 def _tablero(u,n):
     filas=db.trabajos(u['correo'],n)
@@ -67,26 +91,22 @@ def _tablero(u,n):
     columnas[2].metric('Detenidos',sum(d['estado']=='Detenido' for d in filas))
     columnas[3].metric('Pruebas aprobadas',sum(d['prueba']=='Aprobada' for d in filas))
     st.subheader('Pulso por área')
-    grafico=[];tarjetas=st.columns(2)
+    tarjetas=st.columns(2)
     for indice,area in enumerate(sorted({d['area'] for d in filas})):
         grupo=[d for d in filas if d['area']==area];valores_area=[d['avance'] for d in grupo if d['avance'] is not None]
         promedio=round(sum(valores_area)/len(valores_area),1) if valores_area else None
-        grafico.append({'Área':area,'Avance %':promedio})
         col=tarjetas[indice%2]
         color='#f87171' if any(d['estado']=='Detenido' for d in grupo) else '#ff932b'
         porcentaje=str(promedio)+'%' if promedio is not None else 'Sin porcentaje'
         col.markdown(f'<div class="trab-area"><div><b>{escape(area)}</b><span>{sum(d["estado"]=="Terminado" for d in grupo)} / {len(grupo)} terminados · {sum(d["estado"]=="Detenido" for d in grupo)} detenidos</span></div><strong>{porcentaje}</strong><div class="trab-track"><i style="width:{promedio or 0}%;background:{color}"></i></div></div>',unsafe_allow_html=True)
-    datos=pd.DataFrame(grafico);datos['Avance %']=pd.to_numeric(datos['Avance %'],errors='coerce')
-    st.bar_chart(datos,x='Área',y='Avance %',color='#ff932b',height=240)
-    st.caption(f"Promedio de los porcentajes registrados, con igual peso por trabajo. {sum(d['avance'] is None for d in filas)} trabajos sin porcentaje. No representa horas ni confirma pruebas.")
-    grupos=db.lineas(filas);listas=sum(g['partida']=='Lista según registros' for g in grupos)
+    st.caption(f"Promedio de los porcentajes registrados, con igual peso por trabajo. {sum(d['avance'] is None for d in filas)} trabajos sin porcentaje.")
     st.subheader('Preparación para la partida')
-    st.write(f"**{listas} de {len(grupos)} grupos de área / línea listos según los registros.**")
     cols=st.columns(2)
-    for i,g in enumerate(grupos):
-        listo=g['partida']=='Lista según registros'
-        cols[i%2].markdown(f'<div class="trab-readiness"><b>{escape(g["línea"])}</b><span class="trab-pill {"ready" if listo else "pending"}">{"Listo según registros" if listo else "Pendiente"}</span></div>',unsafe_allow_html=True)
-    st.caption('Se exige trabajo terminado, prueba aprobada o no requerida documentada y ausencia de pendientes. Verificar operativamente antes de partir.')
+    for i,g in enumerate(preparacion_por_area(filas)):
+        listo=g['probados']+g['sin_prueba']==g['total']
+        adicional=f" · {g['sin_prueba']} sin prueba requerida, documentados" if g['sin_prueba'] else ''
+        cols[i%2].markdown(f'<div class="trab-readiness"><b>{escape(g["area"])}</b><span class="trab-pill {"ready" if listo else "pending"}">{g["probados"]} / {g["total"]} probados y listos</span><small>{adicional}</small></div>',unsafe_allow_html=True)
+    st.caption('Cuenta trabajos terminados con prueba aprobada y sin pendientes. Los casos con prueba no requerida se identifican por separado.')
     alertas=[d for d in filas if d['estado']=='Detenido' or d.get('pendiente')]
     if alertas:
         st.subheader('Requiere atención')
@@ -199,12 +219,15 @@ def _chat(u,n):
     d=next(x for x in grupo if x['id']==ident)
     with st.chat_message('assistant'):
         st.write(f"**{area} · {d['descripcion']}**")
-        st.write('Cuéntame lo que viste ahora: qué se hizo, qué falta o si hubo algún hallazgo. Te ayudo a ordenar el avance.')
-    _pruebas_visibles(u,n,d)
-    for h in d['historial'][-12:]:
+        st.caption(f"{d['estado']} · Avance: {str(d['avance'])+'%' if d['avance'] is not None else 'Por estimar'} · Prueba: {d['prueba']}")
+        if d.get('pendiente'):st.write('**Pendiente:** '+d['pendiente'])
+    st.caption('BITÁCORA DEL TRABAJO · últimos registros')
+    for h in [h for h in d['historial'] if not h.get('automatico')][-6:]:
         with st.chat_message('user'):
             st.caption(f"{h['nombre']} · {_fecha(h['fecha'])}")
             st.write(h.get('mensaje') or f"{h['estado']} · Prueba: {h['prueba']}")
+    with st.chat_message('assistant'):st.write(pregunta_bitacora(d))
+    _pruebas_visibles(u,n,d)
     pendiente=st.session_state.get(pendiente_key)
     if pendiente:
         st.warning('Hay una novedad que no se pudo guardar. Conserva su trabajo original; no se enviará a otra área.')
@@ -215,7 +238,7 @@ def _chat(u,n):
             st.session_state.pop(pendiente_key,None);st.rerun()
     with st.expander('Adjuntar fotos (opcional)'):
         adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
-    escrito=st.chat_input(f'¿Cómo va este trabajo en {area}?…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
+    escrito=st.chat_input('Escribe tu observación o responde a GearBot…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
     if escrito:
         if len(escrito)>10000 or len(adjuntos or [])>3 or any(f.size>2*1024*1024 for f in adjuntos or []):
             st.error('Máximo 10.000 caracteres y 3 fotos de hasta 2 MB.');return
@@ -246,9 +269,9 @@ def _chat(u,n):
             st.rerun()
         except ValueError as exc:st.error(str(exc))
     _estado_novedad(u,n,ident)
-    st.write('**Estados rápidos**')
     a,b=st.columns(2)
-    for col,accion in [(a,'Iniciado'),(b,'Trabajo terminado')]:
+    acciones=[] if d['estado']=='Terminado' else ([(a,'Iniciado')] if d['estado']=='Pendiente' else [])+[(b,'Trabajo terminado')]
+    for col,accion in acciones:
         if col.button(accion,key=f'trab_chat_rapido_{ident}_{accion}'):
             cambio={k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')}
             cambio['estado']='En ejecución' if accion=='Iniciado' else 'Terminado'
@@ -258,21 +281,25 @@ def _chat(u,n):
                 db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el responsable de turno.')
                 st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.rerun()
             except ValueError as exc:st.error(str(exc))
-    if db.gestor(u):_plan_etapas(u,n,d)
-    with st.expander('Registrar bloqueo, resultado de prueba o corregir datos'):
-        _actualizar(u,n,ident)
+    with st.expander('Ver bitácora completa o corregir un registro'):
+        if st.toggle('Abrir herramientas de corrección',key=f'trab_chat_detalle_{n}_{ident}'):
+            _actualizar(u,n,ident)
+            if db.gestor(u):_plan_etapas(u,n,d)
 
 
 
 def _enlace_campo(u,n):
-    from campo.api import instalar_en_streamlit
+    from campo.api import instalar_en_streamlit, diagnostico
     if not instalar_en_streamlit():
-        st.caption('La vista para trabajar sin señal aún no está habilitada en este servidor. Puedes continuar con el chat conectado.');return
+        st.warning('No se pudo habilitar la bitácora sin señal en este servidor.')
+        if st.button('Reintentar preparar modo sin señal',key=f'trab_campo_reintento_{n}'):st.rerun()
+        if db.gestor(u):st.code(diagnostico())
+        return
     from database.campo import emitir_ticket
     from streamlit import config
     prefijo=config.get_option('server.baseUrlPath') or ''
     ruta=('/'+prefijo.strip('/') if prefijo else '')+'/neuralmant-campo/?acceso='+emitir_ticket(u['correo'],n)
-    st.link_button('Abrir Vista de terreno · funciona sin señal',ruta)
+    st.link_button('Abrir bitácora · con y sin señal',ruta,type='primary')
     st.caption('Ábrela con conexión antes de ingresar a la planta. Espera el indicador “Modo sin señal preparado”; las novedades se sincronizan al recuperar conexión.')
 
 
@@ -309,7 +336,7 @@ def _estado_novedad(u,n,ident):
         with st.chat_message('assistant'):st.write(ultima['detalle']+' Responde aquí en el chat.')
     elif ultima['estado']=='error':st.warning(ultima['detalle'])
     elif ultima['estado']=='lista':
-        st.success(ultima['detalle'])
+        st.caption('✓ '+ultima['detalle'])
         clave=f'trab_ia_vista_{n}_{ident}'
         if st.session_state.get(clave)!=ultima['id']:
             st.session_state[clave]=ultima['id'];st.rerun(scope='app')
