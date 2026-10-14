@@ -1,8 +1,9 @@
 """Programación, bitácora, evidencia y cierres inmutables de turno."""
 import hashlib, json, calendar, logging, threading
-from datetime import datetime, date
+from contextlib import ExitStack
+from datetime import datetime, date, timedelta
 from io import BytesIO
-from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select, delete
+from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select, delete, or_, and_
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from PIL import Image
 from ia.etapas_trabajos import validar_plan, plan_base, calcular
@@ -61,6 +62,20 @@ class HistoricoTrabajo(Base):
     vence: Mapped[datetime]=mapped_column(DateTime,index=True)
 
 
+class NovedadIA(Base):
+    __tablename__='novedad_trabajo_ia'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    trabajo: Mapped[int]=mapped_column(ForeignKey('trabajo_fin_semana.id'),index=True)
+    programa: Mapped[int]=mapped_column(ForeignKey('programa_fin_semana.id'),index=True)
+    usuario: Mapped[str]=mapped_column(String(180))
+    version: Mapped[int]=mapped_column(Integer)
+    datos: Mapped[str]=mapped_column(Text)
+    estado: Mapped[str]=mapped_column(String(30),default='pendiente',index=True)
+    detalle: Mapped[str]=mapped_column(Text,default='')
+    token: Mapped[str]=mapped_column(String(36),default='')
+    actualizado: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
+
+
 def _tres_meses(fecha):
     mes=fecha.month+3;anio=fecha.year+(mes-1)//12;mes=(mes-1)%12+1
     return fecha.replace(year=anio,month=mes,day=min(fecha.day,calendar.monthrange(anio,mes)[1]))
@@ -69,6 +84,9 @@ def _limpiar_historial(s,ahora):
     vencidos=list(s.scalars(select(HistoricoTrabajo).where(HistoricoTrabajo.vence<=ahora).with_for_update()))
     for h in vencidos:
         n=h.programa
+        from database.campo import AccesoCampo, ReciboCampo
+        s.execute(delete(AccesoCampo).where(AccesoCampo.programa==n))
+        s.execute(delete(ReciboCampo).where(ReciboCampo.programa==n))
         s.delete(h);s.flush()
         s.execute(delete(ProgramaFinSemana).where(ProgramaFinSemana.id==n))
     return len(vencidos)
@@ -111,10 +129,13 @@ def _archivar(s,p,u):
             out=BytesIO();imagen.save(out,format='JPEG',quality=70)
             fotos[d['id']].append(dict(contenido=out.getvalue(),nombre=f.nombre,usuario=f.usuario,fecha=f.fecha))
     ahora=datetime.utcnow()
-    corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.',sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),entregas=entregas,final=True)
+    sin_procesar=[f"Trabajo #{j.trabajo}: {j.estado} · {j.detalle or 'Procesamiento sin terminar'}" for j in s.scalars(select(NovedadIA).where(NovedadIA.programa==p.id,NovedadIA.estado.in_(['pendiente','procesando','pregunta','error'])))]
+    nota_ia='\nNovedades con procesamiento o aclaración pendiente:\n'+'\n'.join(sin_procesar) if sin_procesar else ''
+    corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.'+nota_ia,sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),entregas=entregas,final=True)
     pdf=render_pdf(corte,fotos)
     s.add(HistoricoTrabajo(programa=p.id,pdf=pdf,cerrado=ahora,vence=_tres_meses(ahora)));s.flush()
     ids=select(TrabajoFinSemana.id).where(TrabajoFinSemana.programa==p.id)
+    s.execute(delete(NovedadIA).where(NovedadIA.programa==p.id))
     s.execute(delete(FotoTrabajo).where(FotoTrabajo.trabajo.in_(ids)))
     s.execute(delete(CierreTrabajo).where(CierreTrabajo.programa==p.id))
     s.execute(delete(TrabajoFinSemana).where(TrabajoFinSemana.programa==p.id))
@@ -201,7 +222,7 @@ def crear_programa(correo,titulo,centro,inicio,fin,nombre,pdf,filas):
             s.add(TrabajoFinSemana(programa=p.id,datos=json.dumps(d,ensure_ascii=False),historial='[]'))
         return p.id
 
-def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
+def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje='',_sesion=None):
     if len(mensaje)>10000:raise ValueError('Mensaje demasiado largo.')
     if len(fotos)>3:raise ValueError('Máximo 3 fotos por actualización.')
     for nombre,contenido in fotos:
@@ -215,7 +236,10 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
     if (estado=='Terminado') != (avance==100) or (estado=='Pendiente' and avance!=0):raise ValueError('Terminado requiere 100%; Pendiente requiere 0%.')
     if estado=='Detenido' and not cambio.get('pendiente','').strip():raise ValueError('Indica qué está bloqueando el trabajo.')
     if prueba in ('Aprobada','Fallida','No requerida') and not cambio.get('detalle_prueba','').strip():raise ValueError('Registra resultado/evidencia o motivo por el que no requiere prueba.')
-    with Session(engine) as s,s.begin():
+    with ExitStack() as stack:
+        if _sesion is not None:s=_sesion
+        else:
+            s=stack.enter_context(Session(engine));stack.enter_context(s.begin())
         u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
         t=s.get(TrabajoFinSemana,trabajo,with_for_update=True)
         if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
@@ -228,7 +252,7 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
         if cambio.get('plan_nuevo'):
             if d.get('etapas'):raise ValueError('El trabajo ya tiene un plan revisado. Recarga la propuesta.')
             d['etapas']=validar_plan(cambio.get('etapas',[]))
-            d['plan_origen']='Propuesto por GearBot y confirmado por el responsable de turno'
+            d['plan_origen']='Plan orientativo generado automáticamente por GearBot' if cambio.get('aplicacion_automatica') else 'Propuesto por GearBot y confirmado por el responsable de turno'
         origen=cambio.get('origen_avance')
         if origen=='estimado_etapas':
             plan=d.get('etapas') or plan_base(d['descripcion'])
@@ -240,9 +264,10 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje=''):
             if origen not in ('informado_supervisor','estado_supervisor'):raise ValueError('Origen del avance inválido.')
             d['origen_avance']=origen
         for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba'):d[k]=cambio.get(k,'')
+        if 'dialogo_prueba' in cambio:d['dialogo_prueba']=cambio['dialogo_prueba']
         d.update(actualizado=datetime.utcnow().isoformat(),autor=correo)
         if mensaje.strip():d['ultimo_mensaje']=mensaje.strip()
-        h=json.loads(t.historial);h.append(dict(origen_avance=d.get('origen_avance','informado_supervisor'),etapas_confirmadas=d.get('etapas_confirmadas',[]),mensaje=mensaje.strip(),fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],rol=u.get('rol',''),**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos'])))
+        h=json.loads(t.historial);h.append(dict(automatico=bool(cambio.get('aplicacion_automatica')),origen_avance=d.get('origen_avance','informado_supervisor'),etapas_confirmadas=d.get('etapas_confirmadas',[]),mensaje=mensaje.strip(),fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],rol=u.get('rol',''),**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos'])))
         t.datos=json.dumps(d,ensure_ascii=False);t.historial=json.dumps(h,ensure_ascii=False)
         s.flush()
         return t.version
@@ -297,3 +322,91 @@ def configurar_etapas(correo,n,trabajo,version,plan):
         d=json.loads(t.datos)
         if d.get('etapas_confirmadas'):raise ValueError('Este plan ya tiene etapas confirmadas; no se modifican sus pesos durante la ejecución.')
         d['etapas']=plan;t.datos=json.dumps(d,ensure_ascii=False)
+
+
+def encolar_novedad(correo,n,ident,version,mensaje,_sesion=None):
+    with ExitStack() as stack:
+        if _sesion is not None:s=_sesion
+        else:
+            s=stack.enter_context(Session(engine));stack.enter_context(s.begin())
+        u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
+        t=s.get(TrabajoFinSemana,ident)
+        if not t or t.programa!=n or not puede_chat(u):raise ValueError('Trabajo no disponible para actualizar.')
+        if t.version!=version:raise ValueError('La novedad se guardó, pero otra persona actualizó el trabajo. GearBot no sobrescribirá su avance.')
+        anterior=s.scalar(select(NovedadIA).where(NovedadIA.trabajo==ident,NovedadIA.estado=='pregunta').order_by(NovedadIA.id.desc()))
+        historial=json.loads(t.historial)
+        contexto='\n'.join(h['mensaje'] for h in historial[-6:] if h.get('mensaje'))
+        if anterior:
+            previo=json.loads(anterior.datos)
+            contexto=previo.get('contexto','')+'\n'+previo['mensaje']+'\nGearBot preguntó: '+anterior.detalle
+            anterior.estado='respondida'
+        for viejo in s.scalars(select(NovedadIA).where(NovedadIA.trabajo==ident,NovedadIA.estado.in_(['pendiente','procesando','pregunta']))):
+            viejo.estado='respondida';viejo.token=''
+        job=NovedadIA(trabajo=ident,programa=n,usuario=correo,version=version,datos=json.dumps(dict(trabajo=json.loads(t.datos),mensaje=mensaje,contexto=contexto),ensure_ascii=False),estado='pendiente',detalle='')
+        s.add(job);s.flush();return job.id
+
+
+_novedad_claim_lock=threading.Lock()
+
+def tomar_novedad():
+    with _novedad_claim_lock:return _tomar_novedad()
+
+def _tomar_novedad():
+    from uuid import uuid4
+    with Session(engine) as s,s.begin():
+        ahora=datetime.utcnow()
+        j=s.scalar(select(NovedadIA).where(or_(NovedadIA.estado=='pendiente',and_(NovedadIA.estado=='procesando',NovedadIA.actualizado<ahora-timedelta(minutes=2)))).order_by(NovedadIA.id).limit(1).with_for_update(skip_locked=True))
+        if not j:return None
+        j.estado='procesando';j.actualizado=ahora;j.token=str(uuid4())
+        return dict(id=j.id,token=j.token,usuario=j.usuario,programa=j.programa,ident=j.trabajo,version=j.version,**json.loads(j.datos))
+
+
+def resultado_novedad(job,propuesta=None,error=''):
+    from ia.novedad_automatica import combinar
+    # Apply with the version captured AFTER saving the message; a newer edit wins.
+    with Session(engine) as s:
+        j=s.get(NovedadIA,job['id'])
+        if not j or j.token!=job['token'] or j.estado!='procesando':return
+        t=s.get(TrabajoFinSemana,job['ident'])
+        if not t or t.version!=job['version']:error='El trabajo recibió una actualización más reciente. Se conservó la novedad y no se sobrescribió el avance.'
+    detalle=error;estado='error' if error else 'lista'
+    if not error:
+        if propuesta.get('pregunta'):estado='pregunta';detalle=propuesta['pregunta']
+        else:
+            cambio=combinar(job['trabajo'],propuesta)
+            cambio['aplicacion_automatica']=True
+            if cambio.get('pregunta'):estado='pregunta';detalle=cambio['pregunta']
+            else:
+                try:
+                    actualizar(job['usuario'],job['programa'],job['ident'],job['version'],cambio)
+                    detalle='Avance actualizado automáticamente según tu novedad.'
+                except ValueError as exc:estado='error';detalle=str(exc)
+    with Session(engine) as s,s.begin():
+        j=s.get(NovedadIA,job['id'],with_for_update=True)
+        if j and j.token==job['token']:
+            j.estado=estado;j.detalle=detalle;j.actualizado=datetime.utcnow()
+
+
+def ultima_novedad(correo,n,ident):
+    with Session(engine) as s:
+        _programa(s,_usuario(s,correo),n)
+        j=s.scalar(select(NovedadIA).where(NovedadIA.programa==n,NovedadIA.trabajo==ident).order_by(NovedadIA.id.desc()))
+        return dict(id=j.id,estado=j.estado,detalle=j.detalle) if j else None
+
+
+def descartar_novedades_anteriores(correo,n,ident):
+    with Session(engine) as s,s.begin():
+        u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
+        if not puede_chat(u):raise ValueError('No puedes actualizar este programa.')
+        for j in s.scalars(select(NovedadIA).where(NovedadIA.programa==n,NovedadIA.trabajo==ident,NovedadIA.estado.in_(['pendiente','procesando','pregunta']))):
+            j.estado='respondida';j.token=''
+
+
+def registrar_prueba(correo,n,ident,version,accion,texto=''):
+    from motores.pruebas_trabajos import transicion
+    with Session(engine) as s,s.begin():
+        u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
+        t=s.get(TrabajoFinSemana,ident)
+        if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
+        cambio=transicion(json.loads(t.datos),accion,texto)
+        return actualizar(correo,n,ident,version,cambio,mensaje=texto or {'iniciar_prueba':'Se realizaron las pruebas de funcionamiento.','sin_observaciones':'Funcionamiento normal, sin observaciones.','con_observaciones':'Se observaron anomalías durante la prueba.','impide_partida':'La observación impide la partida.','no_impide_partida':'La observación no impide la partida ni el funcionamiento normal.'}.get(accion,accion),_sesion=s)

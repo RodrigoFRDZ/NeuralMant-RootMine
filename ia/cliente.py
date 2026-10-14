@@ -1,5 +1,6 @@
 import os
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -9,6 +10,9 @@ from pydantic import BaseModel
 from ia.esquemas import DiagnosticoInicial, InformeFinalIA, IshikawaIA, ProfundizacionCausal, RevisionEvidenciaPlan
 from ia.prompts import CAUSAL_SISTEMA, DIAGNOSTICO_SISTEMA, INFORME_SISTEMA, ISHIKAWA_SISTEMA, EVIDENCIA_PLAN_SISTEMA
 from database.metricas_sistema import registrar_uso_ia
+
+configuracion_ia_contexto = ContextVar("configuracion_ia_contexto", default=None)
+usuario_ia_contexto = ContextVar("usuario_ia_contexto", default="")
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -46,6 +50,7 @@ class GearBotTemporalmenteNoDisponible(RuntimeError):
 
 
 def _usuario_email_actual() -> str:
+    if usuario_ia_contexto.get():return usuario_ia_contexto.get()
     try:
         usuario = st.session_state.get("usuario_actual") or {}
         return (usuario.get("correo") or "").strip().lower()
@@ -121,7 +126,10 @@ def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str
     except ImportError as error:
         raise RuntimeError("Falta instalar google-genai. Ejecuta INSTALAR_ROOTMINE.bat.") from error
 
-    client = genai.Client(api_key=api_key)
+    rapido=getattr(esquema,"__name__","")=="NovedadAutomatica"
+    opciones_cliente={"api_key":api_key}
+    if rapido:opciones_cliente["http_options"]=types.HttpOptions(timeout=20000)
+    client = genai.Client(**opciones_cliente)
     operacion = getattr(esquema, "__name__", "GeneracionIA")
     try:
         respuesta = client.models.generate_content(
@@ -132,7 +140,7 @@ def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str
                 response_mime_type="application/json",
                 response_schema=esquema,
                 temperature=0.15,
-                max_output_tokens=8192,
+                max_output_tokens=2048 if rapido else 8192,
             ),
         )
         registrar_uso_ia(modelo, operacion, "ok", _usuario_email_actual())
@@ -152,7 +160,7 @@ def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str
 
 
 def _generar(sistema: str, contenido: str, esquema: type[T]) -> T:
-    configuracion = obtener_configuracion()
+    configuracion = configuracion_ia_contexto.get() or obtener_configuracion()
     _validar_clave(configuracion)
     return _gemini_estructurado(configuracion.modelo, configuracion.api_key, sistema, contenido, esquema)
 

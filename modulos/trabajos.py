@@ -154,6 +154,7 @@ def _plan_etapas(u,n,d):
 def _chat(u,n):
     if not db.puede_chat(u):
         st.error('Solo supervisores, coordinadores de mantenimiento o administración pueden registrar mensajes.');return
+    _enlace_campo(u,n)
     filas=db.trabajos(u['correo'],n)
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
     if not opciones:
@@ -182,7 +183,7 @@ def _chat(u,n):
     grupo=[d for d in opciones if d['area']==area]
     pendientes=[d for d in grupo if d['estado']!='Terminado' or d['prueba'] not in ('Aprobada','No requerida') or d.get('pendiente')]
     with st.chat_message('assistant'):
-        st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos con ejecución, pruebas o pendientes por revisar**. ¿Qué pega vemos?")
+        st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos con ejecución, pruebas o pendientes por revisar**. ¿Qué trabajo revisamos?")
     mostrar_todos=st.checkbox('Ver también trabajos terminados y con pruebas resueltas',key=f'trab_chat_incluir_terminados_{n}')
     visibles=grupo if mostrar_todos else pendientes
     actual=st.session_state.get(seleccionado_key)
@@ -193,12 +194,13 @@ def _chat(u,n):
         else:st.session_state.pop(seleccionado_key,None)
     if not visibles:st.success('Esta área no tiene trabajos pendientes según lo registrado. Puedes pasar a otra área.');return
     ident=st.selectbox('¿Qué trabajo revisamos?',[None]+[d['id'] for d in visibles],key=seleccionado_key,
-        format_func=lambda i:'Selecciona una pega' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {d['estado']} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
+        format_func=lambda i:'Selecciona un trabajo' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {d['estado']} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
     if not ident:return
     d=next(x for x in grupo if x['id']==ident)
     with st.chat_message('assistant'):
         st.write(f"**{area} · {d['descripcion']}**")
         st.write('Cuéntame lo que viste ahora: qué se hizo, qué falta o si hubo algún hallazgo. Te ayudo a ordenar el avance.')
+    _pruebas_visibles(u,n,d)
     for h in d['historial'][-12:]:
         with st.chat_message('user'):
             st.caption(f"{h['nombre']} · {_fecha(h['fecha'])}")
@@ -213,53 +215,37 @@ def _chat(u,n):
             st.session_state.pop(pendiente_key,None);st.rerun()
     with st.expander('Adjuntar fotos (opcional)'):
         adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
-    escrito=st.chat_input(f'¿Cómo va esta pega en {area}?…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
+    escrito=st.chat_input(f'¿Cómo va este trabajo en {area}?…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
     if escrito:
         if len(escrito)>10000 or len(adjuntos or [])>3 or any(f.size>2*1024*1024 for f in adjuntos or []):
             st.error('Máximo 10.000 caracteres y 3 fotos de hasta 2 MB.');return
         mensaje=escrito;fotos=[(f.name,f.getvalue()) for f in adjuntos or []];version_envio=d['version']
         st.session_state[pendiente_key]=dict(trabajo_id=ident,mensaje=mensaje,fotos=fotos)
-    clave=f'trab_chat_propuesta_{n}_{ident}'
     if mensaje:
+        from ia.novedad_automatica import directo, combinar
+        from ia.cola_novedades import iniciar
         cambio={k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')}
+        from motores.pruebas_trabajos import desde_mensaje
+        respuesta=desde_mensaje(d,mensaje) if (d.get('dialogo_prueba') or {}).get('paso') else None
+        inmediato=respuesta or directo(mensaje)
+        if respuesta:cambio=respuesta
+        elif inmediato:cambio=combinar(d,inmediato)
         try:
             version=db.actualizar(u['correo'],n,ident,version_envio,cambio,fotos,mensaje=mensaje)
-            st.session_state.pop(clave,None)
             st.session_state.pop(pendiente_key,None)
-            try:
-                from ia.avance_trabajos import preparar_propuesta
-                with st.spinner('GearBot está ordenando la novedad…'):propuesta=preparar_propuesta(d,mensaje)
-                if propuesta:
-                    nuevo=dict(cambio);nuevo.update(propuesta)
-                    if nuevo['estado']=='Terminado' and 'avance' not in propuesta:nuevo['avance']=100; nuevo.setdefault('origen_avance','estado_supervisor')
-                    elif nuevo['estado']=='Pendiente' and 'avance' not in propuesta:nuevo['avance']=0
-                    elif 'estado' in propuesta and 'avance' not in propuesta and d['estado']=='Pendiente':nuevo['avance']=None
-                    if 'hallazgos' in propuesta and d['hallazgos'] and propuesta['hallazgos']:
-                        nuevo['hallazgos']=d['hallazgos']+'\n'+propuesta['hallazgos']
-                    st.session_state[clave]=dict(version=version,cambio=nuevo)
-            except Exception:
-                st.session_state['trab_flash']='Novedad guardada. GearBot no pudo ordenarla ahora; puedes usar los estados rápidos.'
+            if inmediato:
+                db.descartar_novedades_anteriores(u['correo'],n,ident)
+                st.session_state['trab_flash']='Novedad y avance guardados.'
+            else:
+                try:
+                    db.encolar_novedad(u['correo'],n,ident,version,mensaje);iniciar()
+                    st.session_state['trab_flash']='Novedad guardada. GearBot está actualizando el avance; puedes seguir recorriendo la planta.'
+                except ValueError as exc:st.session_state['trab_flash']=str(exc)
             st.session_state.pop(f'trab_revision_{n}_{ident}',None)
             st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{ident}',f'trab_form_{ident}_']
             st.rerun()
         except ValueError as exc:st.error(str(exc))
-    propuesta=st.session_state.get(clave)
-    if propuesta:
-        obsoleta=d['version']!=propuesta['version']
-        with st.chat_message('assistant'):
-            st.write('Propuesta de GearBot para confirmar:')
-            if propuesta['cambio'].get('etapas'):
-                st.dataframe([{'Etapa':e['etapa'],'Peso %':e['peso'],'Reconocida como terminada':i+1 in propuesta['cambio'].get('etapas_confirmadas',[])} for i,e in enumerate(propuesta['cambio']['etapas'])],hide_index=True)
-            st.dataframe([{'Dato':k.replace('_',' ').capitalize(),'Valor':({'estimado_etapas':'Estimado por etapas','informado_supervisor':'Informado por supervisor','estado_supervisor':'Estado confirmado por supervisor'}.get(v,v) if k=='origen_avance' else str(v)) if v is not None else 'Sin porcentaje informado'} for k,v in propuesta['cambio'].items() if k not in ('etapas','etapas_confirmadas','plan_nuevo')],hide_index=True)
-            if obsoleta:st.warning('El trabajo recibió otra actualización. Descarta esta propuesta y revisa el registro actual.')
-            a,b=st.columns(2)
-            if a.button('Confirmar actualización',key=f'trab_chat_confirmar_{ident}',disabled=obsoleta,type='primary'):
-                try:
-                    db.actualizar(u['correo'],n,ident,propuesta['version'],propuesta['cambio'],mensaje='Actualización revisada y confirmada por el responsable de turno.')
-                    st.session_state.pop(clave,None);st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.session_state['trab_flash']='Estado actualizado.';st.rerun()
-                except ValueError as exc:st.error(str(exc))
-            if b.button('Conservar solo el mensaje',key=f'trab_chat_descartar_{ident}'):
-                st.session_state.pop(clave,None);st.rerun()
+    _estado_novedad(u,n,ident)
     st.write('**Estados rápidos**')
     a,b=st.columns(2)
     for col,accion in [(a,'Iniciado'),(b,'Trabajo terminado')]:
@@ -270,11 +256,63 @@ def _chat(u,n):
             cambio['origen_avance']='estado_supervisor'
             try:
                 db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el responsable de turno.')
-                st.session_state.pop(clave,None);st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.rerun()
+                st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.rerun()
             except ValueError as exc:st.error(str(exc))
     if db.gestor(u):_plan_etapas(u,n,d)
     with st.expander('Registrar bloqueo, resultado de prueba o corregir datos'):
         _actualizar(u,n,ident)
+
+
+
+def _enlace_campo(u,n):
+    from campo.api import instalar_en_streamlit
+    if not instalar_en_streamlit():
+        st.caption('La vista para trabajar sin señal aún no está habilitada en este servidor. Puedes continuar con el chat conectado.');return
+    from database.campo import emitir_ticket
+    from streamlit import config
+    prefijo=config.get_option('server.baseUrlPath') or ''
+    ruta=('/'+prefijo.strip('/') if prefijo else '')+'/neuralmant-campo/?acceso='+emitir_ticket(u['correo'],n)
+    st.link_button('Abrir Vista de terreno · funciona sin señal',ruta)
+    st.caption('Ábrela con conexión antes de ingresar a la planta. Espera el indicador “Modo sin señal preparado”; las novedades se sincronizan al recuperar conexión.')
+
+
+def _pruebas_visibles(u,n,d):
+    from motores.pruebas_trabajos import PREGUNTAS
+    if d['estado']!='Terminado':return
+    with st.container(border=True):
+        st.subheader('Prueba de funcionamiento: '+d['prueba'])
+        paso=(d.get('dialogo_prueba') or {}).get('paso')
+        if paso:
+            with st.chat_message('assistant'):st.write(PREGUNTAS.get(paso,'Cuéntame cómo resultó la prueba.'))
+        elif d['prueba'] not in ('Aprobada','No requerida'):st.write('El trabajo terminó. Registra el resultado de las pruebas para preparar la partida.')
+        acciones=[]
+        if not paso and d['prueba'] not in ('Aprobada','No requerida'):acciones=[('Se realizaron las pruebas','iniciar_prueba')]
+        elif paso=='observaciones':acciones=[('Funcionamiento normal, sin observaciones','sin_observaciones'),('Hubo observaciones','con_observaciones')]
+        elif paso=='impacto':acciones=[('Sí, impide la partida','impide_partida'),('No, funcionamiento normal','no_impide_partida')]
+        for etiqueta,accion in acciones:
+            if st.button(etiqueta,key=f'trab_prueba_{n}_{d["id"]}_{accion}',type='primary'):
+                try:
+                    db.registrar_prueba(u['correo'],n,d['id'],d['version'],accion)
+                    db.descartar_novedades_anteriores(u['correo'],n,d['id'])
+                    st.session_state['trab_flash']='Resultado de prueba registrado.';st.rerun()
+                except ValueError as exc:st.error(str(exc))
+        if d.get('detalle_prueba'):st.caption(d['detalle_prueba'])
+
+
+@st.fragment(run_every='2s')
+def _estado_novedad(u,n,ident):
+    ultima=db.ultima_novedad(u['correo'],n,ident)
+    if not ultima:return
+    if ultima['estado'] in ('pendiente','procesando'):
+        st.caption('✓ Mensaje guardado · GearBot actualiza el avance en segundo plano…')
+    elif ultima['estado']=='pregunta':
+        with st.chat_message('assistant'):st.write(ultima['detalle']+' Responde aquí en el chat.')
+    elif ultima['estado']=='error':st.warning(ultima['detalle'])
+    elif ultima['estado']=='lista':
+        st.success(ultima['detalle'])
+        clave=f'trab_ia_vista_{n}_{ident}'
+        if st.session_state.get(clave)!=ultima['id']:
+            st.session_state[clave]=ultima['id'];st.rerun(scope='app')
 
 
 def _reportes(u,p):
