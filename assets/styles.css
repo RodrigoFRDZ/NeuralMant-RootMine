@@ -436,3 +436,6 @@ div[data-testid="stDownloadButton"] > button:hover {
 [data-testid="stVerticalBlockBorderWrapper"]:has(.trab-chat-area-anchor){position:sticky;top:3.5rem;z-index:40;border-color:#ff932b!important;background:#23282e!important;box-shadow:0 8px 22px rgba(0,0,0,.35)!important}
 .trab-chat-area-anchor{display:none}
 @media(max-width:640px){[data-testid="stVerticalBlockBorderWrapper"]:has(.trab-chat-area-anchor){top:3rem}}
+
+/* Interactive area cards */
+div[class*="st-key-trab_pulso_"] button,div[class*="st-key-trab_pruebas_area_"] button{width:100%;min-height:72px;border-radius:14px;border:1px solid #59616b!important;background:linear-gradient(135deg,#252b32,#1b2026)!important;color:#f8fafc!important;text-align:left;justify-content:flex-start;padding:16px!important}div[class*="st-key-trab_pulso_"] button:hover,div[class*="st-key-trab_pruebas_area_"] button:hover{border-color:#ff932b!important;background:#33291e!important}

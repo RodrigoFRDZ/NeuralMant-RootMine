@@ -77,6 +77,52 @@ def pregunta_bitacora(d):
     return '¿Qué se ha realizado desde la última revisión? Cuéntame qué falta o si apareció alguna observación.'
 
 
+ESTADO_VISUAL={'Pendiente':('🟡','Pendiente','#facc15'),'En ejecución':('🟠','En proceso','#fb923c'),
+    'Terminado':('🟢','Terminada','#4ade80'),'Detenido':('🔴','Detenida','#f87171')}
+
+
+def etiqueta_estado(d):
+    icono,texto,_=ESTADO_VISUAL.get(d['estado'],('⚪',d['estado'],'#cbd5e1'))
+    return icono+' '+texto
+
+
+def grupos_actividades(filas,pruebas=False):
+    if not pruebas:return [('Por completar',[d for d in filas if d['estado']!='Terminado']),('Ejecución terminada',[d for d in filas if d['estado']=='Terminado'])]
+    return [('Faltan por probar / en prueba',[d for d in filas if d['prueba'] not in ('Aprobada','Fallida','No requerida')]),
+        ('Pruebas fallidas / por resolver',[d for d in filas if d['prueba']=='Fallida']),
+        ('Pruebas aprobadas',[d for d in filas if d['prueba']=='Aprobada']),
+        ('Prueba no requerida',[d for d in filas if d['prueba']=='No requerida'])]
+
+
+def _elegir_area_detalle(clave,area):
+    st.session_state[clave]=None if st.session_state.get(clave)==area else area
+
+
+def _detalle_area(u,n,filas,clave,pruebas=False):
+    area=st.session_state.get(clave)
+    if not area or area not in {d['area'] for d in filas}:return
+    grupo=[d for d in filas if d['area']==area]
+    with st.container(border=True):
+        st.subheader(area+' · '+('Pruebas de funcionamiento' if pruebas else 'Actividades'))
+        st.caption('🟡 Pendiente · 🟠 En proceso · 🟢 Terminada · 🔴 Detenida')
+        if not pruebas:st.caption('Ejecución terminada no confirma que se hayan aprobado las pruebas.')
+        for titulo,actividades in grupos_actividades(grupo,pruebas):
+            st.write(f'**{titulo} · {len(actividades)}**')
+            if not actividades:st.caption('Sin actividades en este grupo.')
+            for d in actividades:
+                _,_,color=ESTADO_VISUAL.get(d['estado'],('⚪',d['estado'],'#cbd5e1'))
+                st.markdown(f'<div style="border-left:3px solid {color};padding:8px 12px;margin:8px 0"><b>OT {escape(str(d.get("ot") or "#"+str(d["id"])))}</b> · {escape(d["descripcion"])}<br><span style="color:{color}">{escape(etiqueta_estado(d))}</span> · {str(d["avance"])+"%" if d["avance"] is not None else "Sin porcentaje"} · Prueba: {escape(d["prueba"])}</div>',unsafe_allow_html=True)
+                if d.get('pendiente'):st.caption('Pendiente: '+d['pendiente'])
+                if pruebas and d.get('detalle_prueba'):st.caption(d['detalle_prueba'])
+                if db.puede_chat(u) and st.button('Abrir en bitácora',key=f'{clave}_abrir_{d["id"]}'):
+                    st.session_state['trab_abrir_vista']='Chat de avance'
+                    st.session_state[f'trab_chat_area_{n}']=area
+                    st.session_state[f'trab_chat_activo_{n}']=d['id']
+                    st.session_state[f'trab_chat_incluir_terminados_{n}']=d['estado']=='Terminado'
+                    st.rerun()
+        st.button('Cerrar detalle',key=clave+'_cerrar',on_click=_elegir_area_detalle,args=(clave,area))
+
+
 @st.fragment(run_every='15s')
 def _tablero(u,n):
     filas=db.trabajos(u['correo'],n)
@@ -84,7 +130,7 @@ def _tablero(u,n):
     if not filas:st.info('Sin trabajos.');return
     total=len(filas);valores=[d['avance'] for d in filas if d['avance'] is not None]
     media=round(sum(valores)/len(valores),1) if valores else None
-    st.markdown('<div class="trab-dashboard"><span class="trab-eyebrow">CONTROL DE FIN DE SEMANA</span><h2>Estado general de la planta</h2><p>Avance, bloqueos y preparación para la partida en una sola vista.</p></div>',unsafe_allow_html=True)
+    st.markdown('<div class="trab-dashboard"><span class="trab-eyebrow">CONTROL DE FIN DE SEMANA</span><h2>Estado general de la planta</h2><p>Avance, bloqueos y pruebas de funcionamiento en una sola vista.</p></div>',unsafe_allow_html=True)
     columnas=st.columns(4)
     columnas[0].metric('Avance registrado',str(media)+'%' if media is not None else 'Sin dato')
     columnas[1].metric('Terminados',f"{sum(d['estado']=='Terminado' for d in filas)} / {total}")
@@ -98,14 +144,20 @@ def _tablero(u,n):
         col=tarjetas[indice%2]
         color='#f87171' if any(d['estado']=='Detenido' for d in grupo) else '#ff932b'
         porcentaje=str(promedio)+'%' if promedio is not None else 'Sin porcentaje'
-        col.markdown(f'<div class="trab-area"><div><b>{escape(area)}</b><span>{sum(d["estado"]=="Terminado" for d in grupo)} / {len(grupo)} terminados · {sum(d["estado"]=="Detenido" for d in grupo)} detenidos</span></div><strong>{porcentaje}</strong><div class="trab-track"><i style="width:{promedio or 0}%;background:{color}"></i></div></div>',unsafe_allow_html=True)
+        col.button(f'{area} · {porcentaje} · {sum(d["estado"]=="Terminado" for d in grupo)} / {len(grupo)} terminados',
+            key=f'trab_pulso_{n}_{indice}',use_container_width=True,on_click=_elegir_area_detalle,args=(f'trab_detalle_pulso_{n}',area))
+        col.progress((promedio or 0)/100)
+    _detalle_area(u,n,filas,f'trab_detalle_pulso_{n}')
     st.caption(f"Promedio de los porcentajes registrados, con igual peso por trabajo. {sum(d['avance'] is None for d in filas)} trabajos sin porcentaje.")
-    st.subheader('Preparación para la partida')
+    st.subheader('Pruebas de funcionamiento')
     cols=st.columns(2)
     for i,g in enumerate(preparacion_por_area(filas)):
         listo=g['probados']+g['sin_prueba']==g['total']
         adicional=f" · {g['sin_prueba']} sin prueba requerida, documentados" if g['sin_prueba'] else ''
-        cols[i%2].markdown(f'<div class="trab-readiness"><b>{escape(g["area"])}</b><span class="trab-pill {"ready" if listo else "pending"}">{g["probados"]} / {g["total"]} probados y listos</span><small>{adicional}</small></div>',unsafe_allow_html=True)
+        cols[i%2].button(f'{g["area"]} · {g["probados"]} / {g["total"]} probados y listos',
+            key=f'trab_pruebas_area_{n}_{i}',use_container_width=True,on_click=_elegir_area_detalle,args=(f'trab_detalle_pruebas_{n}',g['area']))
+        if adicional:cols[i%2].caption(adicional)
+    _detalle_area(u,n,filas,f'trab_detalle_pruebas_{n}',pruebas=True)
     st.caption('Cuenta trabajos terminados con prueba aprobada y sin pendientes. Los casos con prueba no requerida se identifican por separado.')
     alertas=[d for d in filas if d['estado']=='Detenido' or d.get('pendiente')]
     if alertas:
@@ -210,25 +262,23 @@ def _chat(u,n):
         with st.chat_message('assistant'):st.write('Elige el área que estás recorriendo y te muestro sus trabajos pendientes.')
         return
     grupo=[d for d in opciones if d['area']==area]
-    pendientes=[d for d in grupo if d['estado']!='Terminado' or d['prueba'] not in ('Aprobada','No requerida') or d.get('pendiente')]
+    pendientes=[d for d in grupo if d['estado']!='Terminado']
     with st.chat_message('assistant'):
-        st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos con ejecución, pruebas o pendientes por revisar**. ¿Qué trabajo revisamos?")
-    mostrar_todos=st.checkbox('Ver también trabajos terminados y con pruebas resueltas',key=f'trab_chat_incluir_terminados_{n}')
+        st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos por completar**. ¿Qué trabajo revisamos?")
+    st.caption('🟡 Pendiente · 🟠 En proceso · 🟢 Terminada · 🔴 Detenida')
+    if len(grupo)>len(pendientes):st.caption(f'{len(grupo)-len(pendientes)} terminados. Activa el filtro para agregar comentarios o registrar sus pruebas.')
+    mostrar_todos=st.checkbox('Mostrar trabajos terminados',key=f'trab_chat_incluir_terminados_{n}')
     visibles=grupo if mostrar_todos else pendientes
     actual=st.session_state.get(seleccionado_key)
-    # Keep the just-completed task visible so its confirmation and evidence can be read.
-    if actual and actual not in {d['id'] for d in visibles}:
-        ultima=next((d for d in grupo if d['id']==actual),None)
-        if ultima:visibles=visibles+[ultima]
-        else:st.session_state.pop(seleccionado_key,None)
-    if not visibles:st.success('Esta área no tiene trabajos pendientes según lo registrado. Puedes pasar a otra área.');return
+    if actual and actual not in {d['id'] for d in visibles}:st.session_state.pop(seleccionado_key,None)
+    if not visibles:st.success('Todas las actividades del área tienen su ejecución terminada. Puedes mostrar las terminadas para comentar o revisar pruebas.');return
     ident=st.selectbox('¿Qué trabajo revisamos?',[None]+[d['id'] for d in visibles],key=seleccionado_key,
-        format_func=lambda i:'Selecciona un trabajo' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {d['estado']} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
+        format_func=lambda i:'Selecciona un trabajo' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {etiqueta_estado(d)} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
     if not ident:return
     d=next(x for x in grupo if x['id']==ident)
     with st.chat_message('assistant'):
         st.write(f"**{area} · {d['descripcion']}**")
-        st.caption(f"{d['estado']} · Avance: {str(d['avance'])+'%' if d['avance'] is not None else 'Por estimar'} · Prueba: {d['prueba']}")
+        st.caption(f"{etiqueta_estado(d)} · Avance: {str(d['avance'])+'%' if d['avance'] is not None else 'Por estimar'} · Prueba: {d['prueba']}")
         if d.get('pendiente'):st.write('**Pendiente:** '+d['pendiente'])
     st.caption('BITÁCORA DEL TRABAJO · últimos registros')
     for h in [h for h in d['historial'] if not h.get('automatico')][-6:]:
