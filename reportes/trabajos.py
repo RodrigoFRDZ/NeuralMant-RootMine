@@ -29,77 +29,104 @@ def generar_pdf(correo,programa,corte,fotos=False):
     return render_pdf(corte,imagenes)
 
 def render_pdf(corte,imagenes=None):
-    imagenes=imagenes or {};filas=corte['trabajos'];novedades=corte.get('novedades_area',[]);analisis=focos(filas,novedades)
+    import base64
+    from reportlab.platypus import KeepTogether
+    from ia.resumen_turno import resumen_base
+    imagenes=imagenes or {};filas=corte['trabajos'];novedades=corte.get('novedades_area',[])
+    analisis=focos(filas,novedades)
     fuentes=Path(__file__).resolve().parents[1]/'assets/fonts'
     if 'Trabajo-Regular' not in pdfmetrics.getRegisteredFontNames():
-        for tipo,archivo in [('Regular','Reporte-Regular.ttf'),('Bold','Reporte-Bold.ttf')]:pdfmetrics.registerFont(TTFont('Trabajo-'+tipo,str(fuentes/archivo)))
-    tinta=colors.HexColor('#25313a');naranja=colors.HexColor('#df791c');gris=colors.HexColor('#596571');linea=colors.HexColor('#dde3e8')
+        for tipo,archivo in [('Regular','Reporte-Regular.ttf'),('Bold','Reporte-Bold.ttf')]:
+            pdfmetrics.registerFont(TTFont('Trabajo-'+tipo,str(fuentes/archivo)))
+    tinta=colors.HexColor('#003087');naranja=colors.HexColor('#E87722');marfil=colors.HexColor('#FFF6E6')
     estilos=getSampleStyleSheet()
     for estilo in estilos.byName.values():
         estilo.textColor=tinta;estilo.fontName='Trabajo-Bold' if estilo.name.startswith(('Heading','Title')) else 'Trabajo-Regular'
-    estilos['Title'].fontSize=22;estilos['Title'].leading=27;estilos['Title'].alignment=0
-    estilos['Heading2'].fontSize=13;estilos['Heading2'].leading=17;estilos['Heading2'].spaceBefore=14;estilos['Heading2'].spaceAfter=8
-    estilos['Heading3'].fontSize=10;estilos['Heading3'].leading=14;estilos['Heading3'].spaceBefore=10
+    estilos['Title'].fontSize=23;estilos['Title'].leading=28;estilos['Title'].alignment=0
+    estilos['Heading2'].fontSize=12;estilos['Heading2'].leading=16;estilos['Heading2'].spaceBefore=16;estilos['Heading2'].spaceAfter=8
     normal=estilos['BodyText'];normal.fontSize=9;normal.leading=13
-    pequeño=ParagraphStyle('Nota',parent=normal,fontSize=8,leading=11,textColor=gris,spaceAfter=5)
-    dato=ParagraphStyle('Indicador',parent=normal,fontName='Trabajo-Bold',fontSize=18,leading=23)
-    eyebrow=ParagraphStyle('Marca',parent=normal,fontName='Trabajo-Bold',fontSize=9,leading=13,textColor=naranja,spaceAfter=10)
-    def p(texto,estilo=normal):return Paragraph(escape(str(texto)).replace('\n','<br/>'),estilo)
+    nota=ParagraphStyle('Nota',parent=normal,fontSize=8,leading=11,spaceAfter=5)
+    etiqueta=ParagraphStyle('Etiqueta',parent=normal,fontName='Trabajo-Bold',fontSize=8,leading=11)
+    blanco=ParagraphStyle('Blanco',parent=etiqueta,textColor=marfil)
+    dato=ParagraphStyle('Indicador',parent=normal,fontName='Trabajo-Bold',fontSize=20,leading=25)
+    def p(texto,estilo=normal):return Paragraph(escape(str(texto or '')).replace('\n','<br/>'),estilo)
+    def breve(texto,limite=230):
+        texto=' '.join(str(texto or '').split())
+        return texto if len(texto)<=limite else texto[:limite].rsplit(' ',1)[0]+'…'
     out=BytesIO();ancho=A4[0]-72
-    doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=36,leftMargin=36,topMargin=38,bottomMargin=38,title='NeuralMant - Informe de ejecución y preparación operacional',author='NeuralMant',subject=corte['titulo'])
-    elementos=[p('NEURALMANT  /  CONTROL DE MANTENIMIENTO',eyebrow),p('Informe de ejecución y preparación operacional',estilos['Title']),p(corte['titulo'],estilos['Heading2']),
-        p(f"Centro {corte['centro']} · {corte['fecha']} · Turno {corte['turno']}",pequeño),p(f"Corte: {_fecha(corte['generado'])} (Chile) · Preparado por {corte['nombre']}",pequeño),Spacer(1,12)]
+    doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=36,leftMargin=36,topMargin=36,bottomMargin=40,title='NeuralMant - Informe ejecutivo de mantenimiento',author='NeuralMant',subject=corte['titulo'])
+    elementos=[p('NEURALMANT / MANTENIMIENTO',etiqueta),Spacer(1,10),p('Ejecución y preparación de partida',estilos['Title']),p(corte['titulo'],estilos['Heading2']),
+        p(f"Centro {corte['centro']} · {corte['fecha']} · Turno {corte['turno']}",nota),p(f"Corte: {_fecha(corte['generado'])} (Chile) · Preparado por {corte['nombre']}",nota),Spacer(1,10)]
     abiertos=[a for a in novedades if a.get('estado')=='Abierto' and not a.get('resuelve')]
-    indicadores=[(f"{sum(d['estado']=='Terminado' for d in filas)} / {len(filas)}",'Actividades terminadas'),(str(sum(d['estado']=='Detenido' for d in filas)),'Trabajos detenidos'),(str(sum(d['prueba'] not in ('Aprobada','No requerida') for d in filas)),'Pruebas por resolver'),(str(len(abiertos)),'Novedades de área abiertas')]
-    tabla=Table([[ [p(v,dato),p(t,pequeño)] for v,t in indicadores]],colWidths=[ancho/4]*4)
-    tabla.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#f2f4f6')),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),10),('BOTTOMPADDING',(0,0),(-1,-1),8),('LINEABOVE',(0,0),(-1,0),2,naranja)]));elementos.append(tabla)
-    elementos.extend([p('01  Resumen ejecutivo',estilos['Heading2']),p(corte.get('comentario') or 'Sin resumen adicional registrado.')])
-    def lista_focos(titulo,items,vacio):
-        elementos.append(p(titulo,estilos['Heading2']))
-        if not items:elementos.append(p(vacio,pequeño))
-        for i,f in enumerate(items,1):elementos.extend([p(f"{i}. {f['referencia']}",estilos['Heading3']),p(f['detalle']),p(f['accion'],pequeño)])
-    lista_focos('02  Focos previos a la partida',analisis['partida'],'Sin focos identificados en los registros actuales. No equivale a autorización de partida.')
-    elementos.append(p('Las prioridades se derivan de lo informado. Requieren validación operacional; un trabajo terminado no confirma una prueba aprobada.',pequeño))
-    elementos.append(p('03  Seguridad y calidad por área',estilos['Heading2']))
-    criticos=[a for a in novedades if a['categoria'] in ('Seguridad','Calidad')]
-    if not criticos:elementos.append(p('Sin novedades de área clasificadas en seguridad o calidad. Revisar también los focos asociados a actividades.',pequeño))
-    for a in criticos:
-        elementos.extend([p(f"{a['area']} · {a['categoria']} · {a['estado']}",estilos['Heading3']),p(a['mensaje']),p(f"{a['nombre']} · {_fecha(a['fecha'])} · Impacto: {a['impacto']} · {a.get('clasificacion','Informada')}",pequeño)])
-        if a.get('cierre'):elementos.append(p('Resolución informada por '+a['cierre']['nombre']+': '+a['cierre']['mensaje'],pequeño))
-    lista_focos('04  Retrasos y entregas',analisis['retrasos'],'No se identificaron retrasos informados en los registros. No se confirma cumplimiento horario si faltan horas reales de entrega.')
-    elementos.append(p('No se clasifica una entrega como tardía por la hora en que se escribió el comentario. Los horarios planificados y la entrega real deben confirmarse para cuantificar una demora.',pequeño))
-    lista_focos('05  Seguimiento durante la semana',analisis['semana'],'Sin focos semanales específicos identificados en los registros actuales.')
-    if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):
-        elementos.extend([p('Acciones y sugerencias de la entrega',estilos['Heading3']),p(corte['sugerencias'])])
-    elementos.append(p('06  Ejecución y pruebas por área',estilos['Heading2']))
-    datos=[[p(x,pequeño) for x in ['Área','Terminadas','Prueba aprobada','Prueba por resolver']]]
-    for area in sorted({d['area'] for d in filas}):
+    def listo(d):return d['estado']=='Terminado' and not d.get('pendiente') and (d['prueba']=='Aprobada' or (d['prueba']=='No requerida' and bool(d.get('detalle_prueba','').strip())))
+    indicadores=[(f"{sum(d['estado']=='Terminado' for d in filas)} / {len(filas)}",'Actividades terminadas'),(str(sum(listo(d) for d in filas)),'Terminadas y verificadas'),(str(sum(d['estado']=='Detenido' for d in filas)),'Trabajos detenidos'),(str(len(abiertos)),'Novedades abiertas')]
+    tabla=Table([[[p(v,dato),p(t,nota)] for v,t in indicadores]],colWidths=[ancho/4]*4)
+    tabla.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),marfil),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),10),('BOTTOMPADDING',(0,0),(-1,-1),10)]));elementos.append(tabla)
+    elementos.extend([p('01 / Conclusión ejecutiva',estilos['Heading2']),p(corte.get('comentario') or resumen_base(filas,novedades)['comentario'])])
+    elementos.append(p('“Terminadas y verificadas”: sin pendientes informados y con prueba aprobada o exclusión justificada. No constituye autorización de partida.',nota))
+    def tabla_datos(headers,rows,widths):
+        datos=[[p(h,blanco) for h in headers]]+[[p(v,nota) for v in row] for row in rows]
+        t=Table(datos,colWidths=[ancho*w for w in widths],repeatRows=1,hAlign='LEFT',splitInRow=1)
+        t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),tinta),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,marfil]),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8),('LEFTPADDING',(0,0),(-1,-1),8),('RIGHTPADDING',(0,0),(-1,-1),8)]))
+        elementos.append(t)
+    elementos.append(p('02 / Estado de entrega por área',estilos['Heading2']))
+    rows=[]
+    for area in sorted({d['area'] for d in filas}|{a['area'] for a in novedades}):
         grupo=[d for d in filas if d['area']==area]
-        datos.append([p(area),p(f"{sum(d['estado']=='Terminado' for d in grupo)} / {len(grupo)}"),p(str(sum(d['prueba']=='Aprobada' for d in grupo))),p(str(sum(d['prueba'] not in ('Aprobada','No requerida') for d in grupo)))])
-    tabla=Table(datos,colWidths=[ancho*.31,ancho*.21,ancho*.23,ancho*.25],repeatRows=1,hAlign='LEFT')
-    tabla.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#edf0f2')),('LINEBELOW',(0,0),(-1,0),1,naranja),('LINEBELOW',(0,1),(-1,-1),.4,linea),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8)]));elementos.append(tabla)
-    elementos.extend([PageBreak(),p('ANEXO  /  TRAZABILIDAD DE LA EJECUCIÓN',eyebrow),p('Detalle de actividades',estilos['Title'])])
+        terminados=sum(d['estado']=='Terminado' for d in grupo)
+        revisiones=sum(d['estado']=='Terminado' and not listo(d) for d in grupo)
+        obs=sum(a['area']==area for a in abiertos)
+        rows.append([area,f'{terminados}/{len(grupo)}',str(sum(listo(d) for d in grupo)),str(revisiones),str(obs)])
+    tabla_datos(['Área','Terminadas / total','Verificadas','Terminadas por revisar','Novedades abiertas'],rows or [['Sin actividades','0/0','0','0','0']],[.28,.18,.17,.19,.18])
+    elementos.append(p('Actividades del programa',estilos['Heading2']))
+    actividad_rows=[]
     for d in filas:
-        elementos.extend([p(d['descripcion'],estilos['Heading2']),p(f"{d['area']}"+(' · '+d['linea'] if d.get('linea') else '')+(' · '+d['equipo'] if d.get('equipo') else ''),pequeño),p(f"OT: {d.get('ot') or 'Sin OT informada'} · Ejecutor: {d.get('ejecutor') or 'Sin ejecutor informado'}",pequeño),
-            p(f"Estado: {d['estado']} · Avance: {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}"),p('Origen del avance: '+{'estimado_etapas':'Estimado por etapas','informado_supervisor':'Informado por supervisor','estado_supervisor':'Estado confirmado por supervisor'}.get(d.get('origen_avance'),'Estado inicial / anterior'),pequeño),p('Pendientes/bloqueos: '+(d.get('pendiente') or 'Sin pendientes informados')),p('Hallazgos: '+(d.get('hallazgos') or 'Sin hallazgos informados')),p('Prueba/resultado: '+(d.get('detalle_prueba') or 'Sin resultado informado')),p('Último mensaje: '+(d.get('ultimo_mensaje') or 'Sin mensaje')),p(f"Última actualización: {_fecha(d.get('actualizado'))} · {d.get('autor') or 'Sin actualización'}",pequeño)])
-        elementos.append(p('Bitácora de la actividad',estilos['Heading3']))
-        for h in d.get('historial',[]):
-            if not corte.get('final') and h.get('automatico'):continue
-            elementos.append(p(f"{_fecha(h['fecha'])} · {h.get('nombre') or h.get('usuario')} · {h.get('estado','')} · Avance: {str(h.get('avance'))+'%' if h.get('avance') is not None else 'Sin porcentaje'} · Prueba: {h.get('prueba','Sin registro')}",pequeño))
-            if h.get('mensaje'):elementos.append(p(h['mensaje']))
-            if corte.get('final'):
-                for campo,etiqueta in [('pendiente','Pendientes'),('hallazgos','Hallazgos'),('detalle_prueba','Resultado de prueba')]:
-                    if h.get(campo):elementos.append(p(etiqueta+': '+h[campo]))
-        for f in imagenes.get(d['id'],[]):
-            imagen=Image(BytesIO(f['contenido']));imagen._restrictSize(ancho,240)
-            elementos.extend([Spacer(1,6),imagen,p(f"Foto: {f['nombre']} · {f['usuario']} · {_fecha(f['fecha'].isoformat())}",pequeño)])
-    elementos.append(p('Bitácora general de las áreas',estilos['Heading2']))
-    if not novedades:elementos.append(p('Sin novedades generales registradas.',pequeño))
+        avance=str(d['avance'])+'%' if d.get('avance') is not None else 'Sin porcentaje'
+        if d.get('origen_avance')=='estimado_etapas':avance+=' (estimado)'
+        actividad_rows.append([d['descripcion']+'\n'+d['area'],d['estado']+'\n'+avance,d['prueba']+('\n'+breve(d.get('detalle_prueba'),130) if d.get('detalle_prueba') else '')])
+    if actividad_rows:tabla_datos(['Actividad / área','Estado / avance','Prueba informada'],actividad_rows,[.49,.22,.29])
+    elementos.append(p('03 / Prioridades y acciones propuestas',estilos['Heading2']))
+    rows=[];vistos=set()
+    for etiqueta_foco,clave in [('Antes de partida','partida'),('Retraso informado','retrasos'),('Seguimiento semanal','semana')]:
+        for f in analisis[clave]:
+            firma=(etiqueta_foco,f['referencia'],f['detalle'])
+            if firma in vistos:continue
+            vistos.add(firma)
+            rows.append([etiqueta_foco+'\n'+f['referencia'],breve(f['detalle'],340),breve(f['accion'],210)])
+    if rows:tabla_datos(['Foco / actividad o área','Antecedente relevante','Acción propuesta'],rows,[.29,.40,.31])
+    else:elementos.append(p('No se identifican focos específicos en lo informado. Confirmar condiciones en terreno.',nota))
+    elementos.append(p('Los antecedentes históricos requieren confirmar su vigencia. Las propuestas no asignan responsables ni plazos que no hayan sido informados. Un comentario escrito tarde no demuestra una entrega tardía.',nota))
+    elementos.append(p('04 / Novedades de las áreas',estilos['Heading2']))
+    # One concise entry per observation; resolutions are attached to the original.
+    rows=[]
     for a in novedades:
-        elementos.extend([p(f"{a['area']} · {a['categoria']} · {a['estado']}",estilos['Heading3']),p(a['mensaje']),p(f"Autor: {a['nombre']} · {a['usuario']} · Registro: {_fecha(a['fecha'])} · Impacto: {a['impacto']}",pequeño)])
-        if a.get('cierre'):elementos.append(p('Cierre informado: '+a['cierre']['mensaje']+' · '+a['cierre']['nombre'],pequeño))
-    for entrega in corte.get('entregas',[]):elementos.extend([p(f"Entrega {entrega['fecha']} · {entrega['turno']} · {entrega['nombre']}",estilos['Heading3']),p(entrega.get('comentario') or 'Sin comentarios.'),p(entrega.get('sugerencias') or 'Sin sugerencias.')])
+        if a.get('resuelve'):continue
+        tratamiento='Pendiente de resolución informada.'
+        if a.get('cierre'):tratamiento='Resolución: '+breve(a['cierre']['mensaje'],200)
+        rows.append([a['area']+'\n'+a['categoria']+' · '+a['estado'],breve(a['mensaje'],300),tratamiento+'\n'+a['nombre']+' · '+_fecha(a['fecha'])])
+    if rows:tabla_datos(['Área / tipo / estado','Antecedente relevante (extracto)','Tratamiento / trazabilidad'],rows,[.25,.43,.32])
+    else:elementos.append(p('Sin novedades generales registradas.',nota))
+    if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):
+        elementos.extend([p('Indicaciones adicionales de la entrega',estilos['Heading2']),p(corte['sugerencias'])])
+    # Bounded selection: one image per area observation or activity, area findings first.
+    seleccion=[]
+    for a in sorted([a for a in novedades if a.get('fotos')],key=lambda a:a.get('estado')!='Abierto'):
+        f=a['fotos'][0]
+        seleccion.append((base64.b64decode(f['contenido']),a['area']+' · '+a['categoria']+' · '+a['estado'],breve(a['mensaje'],150),a['nombre']+' · '+_fecha(a['fecha'])))
+    for d in filas:
+        fotos_trabajo=imagenes.get(d.get('id'),[])
+        if fotos_trabajo:
+            f=fotos_trabajo[-1];fecha=f.get('fecha')
+            seleccion.append((f['contenido'],d['descripcion']+' · '+d['area'],f"{d['estado']} · Prueba: {d['prueba']}",str(f.get('nombre','Imagen'))+' · '+str(f.get('usuario',''))+' · '+_fecha(fecha.isoformat() if hasattr(fecha,'isoformat') else fecha)))
+    if seleccion:
+        cabecera_fotos=[p('05 / Evidencia fotográfica seleccionada',estilos['Heading2']),p('Hasta seis imágenes, una por novedad o actividad. '+('Este PDF conserva la selección del programa cerrado.' if corte.get('final') else 'El registro completo permanece disponible en el programa activo.'),nota)]
+        for i,(contenido,titulo,contexto,autor) in enumerate(seleccion[:6]):
+            im=Image(BytesIO(contenido));im._restrictSize(ancho,210);im.hAlign='LEFT'
+            elementos.append(KeepTogether((cabecera_fotos if i==0 else [])+[p(titulo,etiqueta),Spacer(1,6),im,Spacer(1,5),p(contexto,nota),p(autor,nota),Spacer(1,12)]))
+        if len(seleccion)>6:elementos.append(p(f'Se muestran 6 de {len(seleccion)} registros con evidencia. La selección no representa aprobación ni resolución.',nota))
+    else:elementos.extend([p('05 / Evidencia fotográfica',estilos['Heading2']),p('No hay imágenes adjuntas disponibles para este corte.',nota)])
     def pie(canvas,document):
-        canvas.setStrokeColor(linea);canvas.line(36,28,A4[0]-36,28);canvas.setFont('Trabajo-Regular',8);canvas.setFillColor(gris);canvas.drawString(36,16,'NeuralMant · Informe de mantenimiento');canvas.drawRightString(A4[0]-36,16,f'Página {document.page}')
+        canvas.setStrokeColor(naranja);canvas.setLineWidth(.5);canvas.line(36,28,A4[0]-36,28)
+        canvas.setFont('Trabajo-Regular',8);canvas.setFillColor(tinta);canvas.drawString(36,16,'NeuralMant · Informe ejecutivo de mantenimiento');canvas.drawRightString(A4[0]-36,16,f'Página {document.page}')
     doc.build(elementos,onFirstPage=pie,onLaterPages=pie)
     return out.getvalue()

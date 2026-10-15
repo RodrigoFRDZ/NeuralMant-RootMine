@@ -1,4 +1,6 @@
 import hashlib
+import json
+import base64
 import re
 from html import escape
 from datetime import date, datetime, timedelta
@@ -361,7 +363,7 @@ def _chat(u,n):
 
 
 def _chat_area(u,n,area):
-    from motores.foco_partida import CATEGORIAS,IMPACTOS
+    from motores.foco_partida import CATEGORIAS
     pref=f'trab_area_{n}_{area}_'
     registros=area_db.listar(u['correo'],n,area)
     st.write('**Novedades de '+area+'**')
@@ -370,16 +372,17 @@ def _chat_area(u,n,area):
         with st.chat_message('user'):
             st.caption(f"{r['nombre']} · {_fecha(r['fecha'])} · {r['categoria']} · {r['estado']}")
             st.write(r['mensaje'])
+            for foto in r.get('fotos',[]):st.image(base64.b64decode(foto['contenido']),caption=foto['nombre'],width=360)
             if r.get('cierre'):st.caption('Resolución: '+r['cierre']['mensaje'])
-    with st.expander('Tipo de hallazgo e impacto (opcional)'):
-        categoria=st.selectbox('Tipo de novedad',CATEGORIAS,key=pref+'categoria')
-        impacto=st.selectbox('Impacto informado',IMPACTOS,key=pref+'impacto')
-        st.caption('La clasificación por texto es orientativa. Si no está claro el efecto, queda por evaluar; no se aprueba la partida automáticamente.')
+    categoria=st.selectbox('Tipo de novedad',[c for c in CATEGORIAS if c!='Automática'],index=5,key=pref+'categoria')
+    st.caption('Explica en el comentario lo observado, sus consecuencias y lo que falta por resolver, si corresponde.')
+    revision=st.session_state.get(pref+'revision_fotos',0)
+    fotos=st.file_uploader('Imágenes de la novedad (opcional, máximo 3 de 2 MB)',type=['jpg','jpeg','png'],accept_multiple_files=True,key=pref+'fotos_'+str(revision))
     pend=st.session_state.get(pref+'pendiente')
     escrito=st.chat_input('¿Qué observaste en '+area+'?',key=pref+'mensaje',disabled=bool(pend),max_chars=10000)
     guardar=None
     if escrito:
-        guardar=dict(mensaje=escrito,clave=str(uuid4()),categoria=categoria,impacto=impacto,capturado=datetime.utcnow().isoformat()+'Z')
+        guardar=dict(mensaje=escrito,clave=str(uuid4()),categoria=categoria,fotos=[(f.name,f.getvalue()) for f in fotos],capturado=datetime.utcnow().isoformat()+'Z')
         st.session_state[pref+'pendiente']=guardar
     if pend:
         st.warning('Esta novedad todavía no se guardó. Conserva su área original.')
@@ -389,6 +392,7 @@ def _chat_area(u,n,area):
         try:
             area_db.guardar(u['correo'],n,area,**guardar)
             st.session_state.pop(pref+'pendiente',None)
+            st.session_state[pref+'revision_fotos']=revision+1
             st.session_state['trab_flash']='Novedad del área guardada y disponible para el informe.';_refrescar_chat()
         except ValueError as exc:st.error(str(exc))
         except SQLAlchemyError:st.error('No se pudo guardar ahora. La novedad se conserva para reintentar.')
@@ -458,7 +462,7 @@ def _reportes(u,p):
     st.caption('Resumen de lo registrado en el programa hasta ahora. Puedes ajustar el texto antes de descargar; los estados y porcentajes del trabajo se conservan.')
     novedades=area_db.listar(u['correo'],n)
     base=resumen_base(filas,novedades);pref=f'trab_resumen_{n}_'
-    firma=hashlib.sha256(str(base).encode()).hexdigest()
+    firma=hashlib.sha256(json.dumps(dict(trabajos=filas,novedades=[{k:v for k,v in a.items() if k!='fotos'} for a in novedades]),ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     previo=st.session_state.get(pref+'base')
     if previo is None or all(st.session_state.get(pref+k)==previo[k] for k in ('comentario','sugerencias')):
         for k in ('comentario','sugerencias'):st.session_state[pref+k]=base[k]
@@ -468,7 +472,7 @@ def _reportes(u,p):
     a,b=st.columns(2)
     if a.button('Actualizar resumen desde el chat'):
         st.session_state[pref+'comentario']=base['comentario'];st.session_state[pref+'sugerencias']=base['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
-    if b.button('Mejorar redacción con GearBot'):
+    if b.button('Analizar y sintetizar con GearBot'):
         try:
             with st.spinner('GearBot prepara el resumen…'):
                 nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')},novedades)

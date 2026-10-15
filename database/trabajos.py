@@ -144,6 +144,10 @@ def _archivar(s,p,u):
     sin_procesar=[f"Trabajo #{j.trabajo}: {j.estado} · {j.detalle or 'Procesamiento sin terminar'}" for j in s.scalars(select(NovedadIA).where(NovedadIA.programa==p.id,NovedadIA.estado.in_(['pendiente','procesando','pregunta','error'])))]
     nota_ia='\nNovedades con procesamiento o aclaración pendiente:\n'+'\n'.join(sin_procesar) if sin_procesar else ''
     corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.'+nota_ia,sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),novedades_area=novedades_area,entregas=entregas,final=True)
+    from ia.resumen_turno import resumen_base
+    sintesis=resumen_base(filas,novedades_area)
+    corte['comentario']=sintesis['comentario']+nota_ia
+    corte['sugerencias_automaticas']=False
     pdf=render_pdf(corte,fotos)
     s.add(HistoricoTrabajo(programa=p.id,pdf=pdf,cerrado=ahora,vence=_tres_meses(ahora)));s.flush()
     ids=select(TrabajoFinSemana.id).where(TrabajoFinSemana.programa==p.id)

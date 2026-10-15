@@ -1,5 +1,7 @@
 """Append-only area observations and explicit resolutions with actor/time trace."""
-import json,hashlib
+import json,hashlib,base64
+from io import BytesIO
+from PIL import Image,ImageOps
 from contextlib import ExitStack
 from datetime import datetime
 from uuid import UUID
@@ -18,13 +20,26 @@ def listar(correo,n,area=None):
         db._programa(s,db._usuario(s,correo),n)
         return _listar(s,n,area)
 
-def guardar(correo,n,area,mensaje,clave,categoria='Automática',impacto='Por evaluar',capturado='',resuelve=None,_sesion=None):
+def guardar(correo,n,area,mensaje,clave,categoria='Automática',impacto='Por evaluar',capturado='',resuelve=None,_sesion=None,fotos=()):
     clave=str(UUID(str(clave)));area=str(area).strip();mensaje=str(mensaje).strip()
     if not mensaje or len(mensaje)>10000:raise ValueError('Escribe una novedad de hasta 10.000 caracteres.')
     if capturado:
         momento=datetime.fromisoformat(capturado.replace('Z','+00:00'))
         if momento.tzinfo is None:raise ValueError('La hora de captura debe incluir zona horaria.')
-    firma=hashlib.sha256(json.dumps([area,mensaje,categoria,impacto,capturado,resuelve],ensure_ascii=False).encode()).hexdigest()
+    if len(fotos)>3:raise ValueError('Máximo 3 imágenes por novedad.')
+    adjuntos=[]
+    for nombre,contenido in fotos:
+        if len(contenido)>2*1024*1024:raise ValueError('Cada imagen puede pesar hasta 2 MB.')
+        try:
+            with Image.open(BytesIO(contenido)) as im:
+                if im.format not in ('JPEG','PNG') or im.width*im.height>25000000:raise ValueError('Formato o tamaño inválido.')
+                im.verify()
+            with Image.open(BytesIO(contenido)) as im:
+                im=ImageOps.exif_transpose(im).convert('RGB');im.thumbnail((1400,1400))
+                out=BytesIO();im.save(out,format='JPEG',quality=80)
+            adjuntos.append(dict(nombre=str(nombre)[:240],contenido=base64.b64encode(out.getvalue()).decode('ascii')))
+        except Exception as exc:raise ValueError('Imagen inválida; usa JPG o PNG de hasta 25 megapíxeles.') from exc
+    firma=hashlib.sha256(json.dumps([area,mensaje,categoria,impacto,capturado,resuelve]+([adjuntos] if adjuntos else []),ensure_ascii=False).encode()).hexdigest()
     with ExitStack() as stack:
         if _sesion is None:s=stack.enter_context(Session(db.engine));stack.enter_context(s.begin())
         else:s=_sesion
@@ -46,7 +61,7 @@ def guardar(correo,n,area,mensaje,clave,categoria='Automática',impacto='Por eva
             if dato.get('estado')!='Abierto' or dato.get('resuelve'):raise ValueError('Este hallazgo ya se resolvió.')
             clasificacion.update(categoria='Seguimiento',impacto=dato['impacto'],clasificacion='Resolución informada por supervisor')
         ahora=datetime.utcnow().isoformat()
-        datos=dict(area=area,mensaje=mensaje,fecha=ahora,capturado=capturado or ahora+'Z',usuario=u['correo'],nombre=u['nombre'],rol=u.get('rol',''),estado='Resuelto' if original else 'Abierto',resuelve=int(resuelve) if original else None,**clasificacion)
+        datos=dict(area=area,mensaje=mensaje,fecha=ahora,capturado=capturado or ahora+'Z',usuario=u['correo'],nombre=u['nombre'],rol=u.get('rol',''),fotos=adjuntos,estado='Resuelto' if original else 'Abierto',resuelve=int(resuelve) if original else None,**clasificacion)
         r=db.NovedadArea(programa=n,clave=clave,firma=firma,area=area,datos=json.dumps(datos,ensure_ascii=False));s.add(r);s.flush()
         if original:
             dato.update(estado='Resuelto',cierre=dict(registro=r.id,fecha=ahora,nombre=u['nombre'],usuario=u['correo'],mensaje=mensaje))

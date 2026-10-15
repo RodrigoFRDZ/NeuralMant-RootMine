@@ -43,7 +43,8 @@ def focos(filas,novedades=()):
     for a in novedades:
         if a.get('estado')!='Abierto' or a.get('resuelve'):continue
         f=dict(referencia=a['categoria']+' · '+a['area'],detalle=a['categoria']+': '+a['mensaje'],accion='Propuesta: coordinar revisión del hallazgo y registrar el tratamiento o resolución.')
-        if a['categoria'] in ('Seguridad','Calidad') or (a['impacto'] in ('Partida','Partida y operación semanal') or (a['impacto']=='Por evaluar' and a['categoria']!='General')):partida.append(f)
-        if a['impacto'] in ('Operación semanal','Partida y operación semanal') or a['categoria']=='Operación':semana.append(f)
+        texto=normalizar(a['mensaje'])
+        if a['categoria'] in ('Seguridad','Calidad','Retraso','Trabajo no informado','Operación') or set(senales(texto))&{'Seguridad','Calidad'} or re.search(r'partida|arranque|puesta en marcha',texto):partida.append(f)
+        if a['categoria']=='Operación' or 'Operación' in senales(texto) or re.search(r'durante la semana|operacion semanal',texto):semana.append(f)
         if a['categoria']=='Retraso':retrasos.append(f)
     return dict(partida=partida,semana=semana,retrasos=retrasos)
