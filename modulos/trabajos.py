@@ -514,8 +514,18 @@ def _reportes(u,p):
             with st.spinner('GearBot prepara el resumen…'):
                 nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')},novedades)
             st.session_state[pref+'comentario']=nuevo['comentario'];st.session_state[pref+'sugerencias']=nuevo['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
+            st.session_state.pop(pref+'error_ia',None)
             st.success('Redacción ajustada. Revisa el resumen antes de descargar.')
-        except Exception:st.warning('GearBot no está disponible ahora. Tu resumen se conserva y puedes descargarlo.')
+        except Exception as exc:
+            from ia.diagnostico import diagnosticar_resumen
+            st.session_state[pref+'error_ia']=diagnosticar_resumen(exc)
+    error_ia=st.session_state.get(pref+'error_ia')
+    if error_ia:
+        st.warning(error_ia['mensaje']+' Tu resumen se conserva y puedes descargarlo. Referencia: '+error_ia['referencia'])
+        if u.get('es_admin'):
+            with st.expander('Ver detalle del error de GearBot',expanded=True):
+                st.code('Referencia: '+error_ia['referencia']+'\nFecha UTC: '+error_ia['fecha']+'\nTipo: '+error_ia['tipo']+'\nModelo: '+error_ia['modelo']+'\nDetalle: '+error_ia['detalle'],language='text')
+                st.caption('Puedes copiar este detalle para revisar la causa. La clave de la API se oculta.')
     comentario=st.text_area('Resumen ejecutivo',key=pref+'comentario',height=240)
     sugerencias=st.text_area('Acciones y focos de seguimiento',key=pref+'sugerencias',height=120)
     actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha,turno=turno,comentario=comentario,sugerencias=sugerencias,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas),novedades_area=novedades,sugerencias_automaticas=sugerencias==base['sugerencias'])
