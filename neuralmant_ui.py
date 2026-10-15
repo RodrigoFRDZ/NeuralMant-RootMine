@@ -2,6 +2,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 import streamlit as st
+from modulos.gearbot_animado import mostrar_gearbot
 import extra_streamlit_components as stx
 
 from database.conexion import crear_tablas, descripcion_backend, usando_nube
@@ -337,7 +338,7 @@ def mostrar_identificacion() -> None:
     with izquierda:
         bot_col, _ = st.columns([0.82, 0.18])
         with bot_col:
-            st.image("assets/gearbot_hero.png", use_container_width=True)
+            mostrar_gearbot()
         st.markdown(
             """
             <div class="rootmine-login-brand">
@@ -422,7 +423,7 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">NeuralMant Suite v4.8.6 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">NeuralMant Suite v4.8.7 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def _opciones_navegacion(usuario, pagina):
@@ -471,7 +472,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.8.6 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.8.7 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 

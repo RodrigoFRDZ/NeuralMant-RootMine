@@ -3,6 +3,7 @@ from html import escape
 from collections import Counter
 
 import streamlit as st
+from modulos.gearbot_animado import mostrar_gearbot
 
 from database.rendimiento import borradores_livianos, correcciones_livianas, contar_pendientes, recientes_livianos
 from database.repositorio_adf import eliminar_borrador_adf
@@ -76,7 +77,7 @@ def mostrar_inicio() -> None:
     )
     cbot, ctext = st.columns([0.72, 3.3], gap="medium", vertical_alignment="center")
     with cbot:
-        st.image("assets/gearbot_small.png", use_container_width=True)
+        mostrar_gearbot(compacto=True)
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
@@ -110,7 +111,7 @@ def mostrar_rootmine() -> None:
 
     cbot, ctext = st.columns([0.72, 3.3], gap="medium", vertical_alignment="center")
     with cbot:
-        st.image("assets/gearbot_small.png", use_container_width=True)
+        mostrar_gearbot(compacto=True)
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
