@@ -57,9 +57,7 @@ def render_pdf(corte,imagenes=None):
     blanco=ParagraphStyle('Blanco',parent=etiqueta,textColor=marfil)
     dato=ParagraphStyle('Indicador',parent=normal,fontName='Trabajo-Bold',fontSize=20,leading=25,alignment=TA_LEFT)
     def p(texto,estilo=normal):return Paragraph(escape(str(texto or '')).replace('\n','<br/>'),estilo)
-    def breve(texto,limite=230):
-        texto=' '.join(str(texto or '').split())
-        return texto if len(texto)<=limite else texto[:limite].rsplit(' ',1)[0]+'…'
+    def completo(texto):return ' '.join(str(texto or '').split())
     def parrafos(texto):
         return [p(linea.strip()) for linea in str(texto or '').split('\n') if linea.strip()]
     out=BytesIO();ancho=A4[0]-84
@@ -78,6 +76,9 @@ def render_pdf(corte,imagenes=None):
         datos=[[p(h,blanco) for h in headers]]+[[p(v,celda) for v in row] for row in rows]
         t=Table(datos,colWidths=[ancho*w for w in widths],repeatRows=1,hAlign='LEFT',splitInRow=1)
         t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),tinta),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,marfil]),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8),('LEFTPADDING',(0,0),(-1,-1),8),('RIGHTPADDING',(0,0),(-1,-1),8)]))
+        t.wrap(ancho,100000)
+        espacio_fila=doc.height-12-t._rowHeights[0]
+        t.splitInRow=int(any(h>espacio_fila for h in t._rowHeights[1:]))
         elementos.append(t)
     elementos.append(p('02 / Estado de entrega por área',estilos['Heading2']))
     rows=[]
@@ -93,7 +94,7 @@ def render_pdf(corte,imagenes=None):
     for d in filas:
         avance=str(d['avance'])+'%' if d.get('avance') is not None else 'Sin porcentaje'
         if d.get('origen_avance')=='estimado_etapas':avance+=' (estimado)'
-        actividad_rows.append([d['descripcion']+'\n'+d['area'],d['estado']+'\n'+avance,d['prueba']+('\n'+breve(d.get('detalle_prueba'),130) if d.get('detalle_prueba') else '')])
+        actividad_rows.append([d['descripcion']+'\n'+d['area'],d['estado']+'\n'+avance,d['prueba']+('\n'+completo(d.get('detalle_prueba')) if d.get('detalle_prueba') else '')])
     if actividad_rows:tabla_datos(['Actividad / área','Estado / avance','Prueba informada'],actividad_rows,[.49,.22,.29])
     elementos.append(p('03 / Prioridades y acciones propuestas',estilos['Heading2']))
     rows=[];vistos=set()
@@ -102,7 +103,7 @@ def render_pdf(corte,imagenes=None):
             firma=(etiqueta_foco,f['referencia'],f['detalle'])
             if firma in vistos:continue
             vistos.add(firma)
-            rows.append([etiqueta_foco+'\n'+f['referencia'],breve(f['detalle'],340),breve(f['accion'],210)])
+            rows.append([etiqueta_foco+'\n'+f['referencia'],completo(f['detalle']),completo(f['accion'])])
     if rows:tabla_datos(['Foco / actividad o área','Antecedente relevante','Acción propuesta'],rows,[.29,.40,.31])
     else:elementos.append(p('No se identifican focos específicos en lo informado. Confirmar condiciones en terreno.',nota))
     elementos.append(p('Los antecedentes históricos requieren confirmar su vigencia. Las propuestas no asignan responsables ni plazos que no hayan sido informados. Un comentario escrito tarde no demuestra una entrega tardía.',nota))
@@ -112,9 +113,9 @@ def render_pdf(corte,imagenes=None):
     for a in novedades:
         if a.get('resuelve'):continue
         tratamiento='Pendiente de resolución informada.'
-        if a.get('cierre'):tratamiento='Resolución: '+breve(a['cierre']['mensaje'],200)
-        rows.append([a['area']+'\n'+a['categoria']+' · '+a['estado'],breve(a['mensaje'],300),tratamiento+'\n'+a['nombre']+' · '+_fecha(a['fecha'])])
-    if rows:tabla_datos(['Área / tipo / estado','Antecedente relevante (extracto)','Tratamiento / trazabilidad'],rows,[.25,.43,.32])
+        if a.get('cierre'):tratamiento='Resolución: '+completo(a['cierre']['mensaje'])
+        rows.append([a['area']+'\n'+a['categoria']+' · '+a['estado'],completo(a['mensaje']),tratamiento+'\n'+a['nombre']+' · '+_fecha(a['fecha'])])
+    if rows:tabla_datos(['Área / tipo / estado','Antecedente relevante','Tratamiento / trazabilidad'],rows,[.25,.43,.32])
     else:elementos.append(p('Sin novedades generales registradas.',nota))
     if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):
         elementos.append(p('Indicaciones adicionales de la entrega',estilos['Heading2']))
@@ -123,7 +124,7 @@ def render_pdf(corte,imagenes=None):
     seleccion=[]
     for a in sorted([a for a in novedades if a.get('fotos')],key=lambda a:a.get('estado')!='Abierto'):
         f=a['fotos'][0]
-        seleccion.append((base64.b64decode(f['contenido']),a['area']+' · '+a['categoria']+' · '+a['estado'],breve(a['mensaje'],150),a['nombre']+' · '+_fecha(a['fecha'])))
+        seleccion.append((base64.b64decode(f['contenido']),a['area']+' · '+a['categoria']+' · '+a['estado'],completo(a['mensaje']),a['nombre']+' · '+_fecha(a['fecha'])))
     for d in filas:
         fotos_trabajo=imagenes.get(d.get('id'),[])
         if fotos_trabajo:
@@ -133,7 +134,13 @@ def render_pdf(corte,imagenes=None):
         cabecera_fotos=[p('05 / Evidencia fotográfica seleccionada',estilos['Heading2']),p('Hasta seis imágenes, una por novedad o actividad. '+('Este PDF conserva la selección del programa cerrado.' if corte.get('final') else 'El registro completo permanece disponible en el programa activo.'),nota)]
         for i,(contenido,titulo,contexto,autor) in enumerate(seleccion[:6]):
             im=Image(BytesIO(contenido));im._restrictSize(ancho,210);im.hAlign='LEFT'
-            elementos.append(KeepTogether((cabecera_fotos if i==0 else [])+[p(titulo,etiqueta),Spacer(1,6),im,Spacer(1,5),p(contexto,nota),p(autor,nota),Spacer(1,12)]))
+            cabecera=(cabecera_fotos if i==0 else [])+[p(titulo,etiqueta),p(autor,metadato),Spacer(1,6),im,Spacer(1,5)]
+            leyenda=p(contexto,nota)
+            alto=sum(f.wrap(ancho,100000)[1]+f.getSpaceBefore()+f.getSpaceAfter() for f in cabecera)
+            inicio_leyenda=min(leyenda.wrap(ancho,100000)[1],nota.leading*3)
+            elementos.append(CondPageBreak(min(alto+inicio_leyenda+8,doc.height-20)))
+            elementos.append(KeepTogether(cabecera))
+            elementos.extend([leyenda,Spacer(1,12)])
         if len(seleccion)>6:elementos.append(p(f'Se muestran 6 de {len(seleccion)} registros con evidencia. La selección no representa aprobación ni resolución.',nota))
     else:elementos.extend([p('05 / Evidencia fotográfica',estilos['Heading2']),p('No hay imágenes adjuntas disponibles para este corte.',nota)])
     def pie(canvas,document):
