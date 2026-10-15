@@ -3,8 +3,8 @@ import hashlib, json, calendar, logging, threading
 from contextlib import ExitStack
 from datetime import datetime, date, timedelta
 from io import BytesIO
-from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select, delete, or_, and_
-from sqlalchemy.orm import Mapped, mapped_column, Session
+from sqlalchemy import Integer, String, Text, LargeBinary, DateTime, ForeignKey, UniqueConstraint, select, delete, or_, and_, func
+from sqlalchemy.orm import Mapped, mapped_column, Session, defer
 from PIL import Image
 from ia.etapas_trabajos import validar_plan, plan_base, calcular
 from database.modelos import Base
@@ -81,7 +81,7 @@ def _tres_meses(fecha):
     return fecha.replace(year=anio,month=mes,day=min(fecha.day,calendar.monthrange(anio,mes)[1]))
 
 def _limpiar_historial(s,ahora):
-    vencidos=list(s.scalars(select(HistoricoTrabajo).where(HistoricoTrabajo.vence<=ahora).with_for_update()))
+    vencidos=list(s.scalars(select(HistoricoTrabajo).options(defer(HistoricoTrabajo.pdf)).where(HistoricoTrabajo.vence<=ahora).with_for_update()))
     for h in vencidos:
         n=h.programa
         from database.campo import AccesoCampo, ReciboCampo
@@ -113,7 +113,7 @@ def iniciar_limpieza_historial():
     threading.Thread(target=tarea,name='limpieza-historico-trabajos',daemon=True).start()
 
 def _editable(s,n):
-    if s.get(HistoricoTrabajo,n):raise ValueError('Este programa está cerrado. Consulta o descarga su PDF histórico.')
+    if s.scalar(select(HistoricoTrabajo.programa).where(HistoricoTrabajo.programa==n)):raise ValueError('Este programa está cerrado. Consulta o descarga su PDF histórico.')
 
 def _archivar(s,p,u):
     from reportes.trabajos import render_pdf
@@ -159,7 +159,7 @@ def puede_chat(u):
     return bool(u.get('es_admin') or u.get('rol') in ROLES_AVANCE)
 
 def _programa(s,u,n,bloquear=False):
-    p=s.get(ProgramaFinSemana,n,with_for_update=bloquear)
+    p=s.get(ProgramaFinSemana,n,options=[defer(ProgramaFinSemana.pdf)],with_for_update=bloquear)
     if not p or not (u.get('es_admin') or str(u.get('centro'))==p.centro):
         raise ValueError('Este programa no está disponible para tu cuenta.')
     return p
@@ -173,10 +173,14 @@ def _fila(t):
 
 def programas(correo):
     with Session(engine) as s,s.begin():
-        u=_usuario(s,correo);_limpiar_historial(s,datetime.utcnow()); q=select(ProgramaFinSemana).order_by(ProgramaFinSemana.id.desc())
+        u=_usuario(s,correo);_limpiar_historial(s,datetime.utcnow())
+        # Navigation needs metadata only, never the original or archived PDF bytes.
+        q=select(ProgramaFinSemana.id,ProgramaFinSemana.titulo,ProgramaFinSemana.centro,
+            ProgramaFinSemana.inicio,ProgramaFinSemana.fin,ProgramaFinSemana.fuente,HistoricoTrabajo.vence).outerjoin(
+            HistoricoTrabajo,HistoricoTrabajo.programa==ProgramaFinSemana.id).order_by(ProgramaFinSemana.id.desc())
         if not u.get('es_admin'):q=q.where(ProgramaFinSemana.centro==str(u.get('centro')))
-        archivos={h.programa:h for h in s.scalars(select(HistoricoTrabajo))}
-        return [dict(id=p.id,titulo=p.titulo,centro=p.centro,inicio=p.inicio,fin=p.fin,fuente=p.fuente,cerrado=p.id in archivos,vence=archivos[p.id].vence.isoformat() if p.id in archivos else '') for p in s.scalars(q)]
+        return [dict(id=p.id,titulo=p.titulo,centro=p.centro,inicio=p.inicio,fin=p.fin,fuente=p.fuente,
+            cerrado=p.vence is not None,vence=p.vence.isoformat() if p.vence else '') for p in s.execute(q)]
 
 def trabajos(correo,n):
     with Session(engine) as s:
@@ -390,7 +394,7 @@ def resultado_novedad(job,propuesta=None,error=''):
 def ultima_novedad(correo,n,ident):
     with Session(engine) as s:
         _programa(s,_usuario(s,correo),n)
-        j=s.scalar(select(NovedadIA).where(NovedadIA.programa==n,NovedadIA.trabajo==ident).order_by(NovedadIA.id.desc()))
+        j=s.execute(select(NovedadIA.id,NovedadIA.estado,NovedadIA.detalle).where(NovedadIA.programa==n,NovedadIA.trabajo==ident).order_by(NovedadIA.id.desc()).limit(1)).first()
         return dict(id=j.id,estado=j.estado,detalle=j.detalle) if j else None
 
 

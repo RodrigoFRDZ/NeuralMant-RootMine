@@ -171,7 +171,16 @@ def _plan_etapas(u,n,d):
             except ValueError as exc:st.error(str(exc))
 
 
+def _refrescar_chat():
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+    contexto=get_script_run_ctx()
+    st.rerun(scope='fragment' if contexto and contexto.fragment_ids_this_run else 'app')
+
+
+@st.fragment
 def _chat(u,n):
+    _limpiar_formularios()
+    if st.session_state.get('trab_flash'):st.success(st.session_state.pop('trab_flash'))
     if not db.puede_chat(u):
         st.error('Solo supervisores, coordinadores de mantenimiento o administración pueden registrar mensajes.');return
     _enlace_campo(u,n)
@@ -235,7 +244,7 @@ def _chat(u,n):
         if pendiente.get('trabajo_id')==ident and st.button('Reintentar guardar en este trabajo'):
             mensaje=pendiente['mensaje'];fotos=pendiente['fotos'];version_envio=d['version']
         if st.button('Descartar novedad sin guardar'):
-            st.session_state.pop(pendiente_key,None);st.rerun()
+            st.session_state.pop(pendiente_key,None);_refrescar_chat()
     with st.expander('Adjuntar fotos (opcional)'):
         adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
     escrito=st.chat_input('Escribe tu observación o responde a GearBot…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
@@ -245,6 +254,9 @@ def _chat(u,n):
         mensaje=escrito;fotos=[(f.name,f.getvalue()) for f in adjuntos or []];version_envio=d['version']
         st.session_state[pendiente_key]=dict(trabajo_id=ident,mensaje=mensaje,fotos=fotos)
     if mensaje:
+        with st.chat_message('user'):
+            st.write(mensaje)
+            st.caption('Guardando novedad…')
         from ia.novedad_automatica import directo, combinar
         from ia.cola_novedades import iniciar
         cambio={k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')}
@@ -266,7 +278,7 @@ def _chat(u,n):
                 except ValueError as exc:st.session_state['trab_flash']=str(exc)
             st.session_state.pop(f'trab_revision_{n}_{ident}',None)
             st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{ident}',f'trab_form_{ident}_']
-            st.rerun()
+            _refrescar_chat()
         except ValueError as exc:st.error(str(exc))
     _estado_novedad(u,n,ident)
     a,b=st.columns(2)
@@ -279,7 +291,7 @@ def _chat(u,n):
             cambio['origen_avance']='estado_supervisor'
             try:
                 db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el responsable de turno.')
-                st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';st.rerun()
+                st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';_refrescar_chat()
             except ValueError as exc:st.error(str(exc))
     with st.expander('Ver bitácora completa o corregir un registro'):
         if st.toggle('Abrir herramientas de corrección',key=f'trab_chat_detalle_{n}_{ident}'):
@@ -321,7 +333,7 @@ def _pruebas_visibles(u,n,d):
                 try:
                     db.registrar_prueba(u['correo'],n,d['id'],d['version'],accion)
                     db.descartar_novedades_anteriores(u['correo'],n,d['id'])
-                    st.session_state['trab_flash']='Resultado de prueba registrado.';st.rerun()
+                    st.session_state['trab_flash']='Resultado de prueba registrado.';_refrescar_chat()
                 except ValueError as exc:st.error(str(exc))
         if d.get('detalle_prueba'):st.caption(d['detalle_prueba'])
 
@@ -382,11 +394,15 @@ def _reportes(u,p):
     st.caption('Descargar no cierra la semana. El cierre ocurre al publicar la programación siguiente.')
 
 
-def mostrar_trabajos():
+def _limpiar_formularios():
     limpiar=st.session_state.pop('trab_limpiar_form',None)
     if limpiar:
         for k in list(st.session_state):
             if str(k).startswith(tuple(limpiar) if isinstance(limpiar,list) else limpiar):st.session_state.pop(k,None)
+
+
+def mostrar_trabajos():
+    _limpiar_formularios()
     destino=st.session_state.pop('trab_abrir_vista',None)
     if destino:st.session_state['trab_vista']=destino
     u=st.session_state.get('usuario_actual') or {}

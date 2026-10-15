@@ -5,7 +5,7 @@ import json
 import secrets
 from datetime import datetime,timedelta
 from uuid import UUID
-from sqlalchemy import String,Integer,DateTime,Boolean,ForeignKey,UniqueConstraint,select,delete
+from sqlalchemy import func, String,Integer,DateTime,Boolean,ForeignKey,UniqueConstraint,select,delete
 from sqlalchemy.orm import Mapped,mapped_column,Session
 from database.modelos import Base
 from database import trabajos as db
@@ -70,10 +70,12 @@ def cerrar(token):
 
 def snapshot(token):
     with Session(db.engine) as s:
-        u,p=_autorizar(s,token);archivo=s.get(db.HistoricoTrabajo,p.id)
+        u,p=_autorizar(s,token);archivo=s.scalar(select(db.HistoricoTrabajo.programa).where(db.HistoricoTrabajo.programa==p.id))
         filas=[db._fila(t) for t in s.scalars(select(db.TrabajoFinSemana).where(db.TrabajoFinSemana.programa==p.id).order_by(db.TrabajoFinSemana.id))]
+        ultimos=select(func.max(db.NovedadIA.id).label('id')).where(db.NovedadIA.programa==p.id).group_by(db.NovedadIA.trabajo).subquery()
+        novedades={j.trabajo:j for j in s.execute(select(db.NovedadIA.trabajo,db.NovedadIA.estado,db.NovedadIA.detalle).join(ultimos,db.NovedadIA.id==ultimos.c.id))}
         for d in filas:
-            ultima=s.scalar(select(db.NovedadIA).where(db.NovedadIA.trabajo==d['id']).order_by(db.NovedadIA.id.desc()))
+            ultima=novedades.get(d['id'])
             if ultima:d['ia']=dict(estado=ultima.estado,detalle=ultima.detalle)
         return dict(usuario={'correo':u['correo'],'nombre':u['nombre'],'puede_editar':db.puede_chat(u)},programa={'id':p.id,'titulo':p.titulo,'centro':p.centro,'inicio':p.inicio,'fin':p.fin,'cerrado':bool(archivo)},trabajos=filas,actualizado=datetime.utcnow().isoformat()+'Z')
 
