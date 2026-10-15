@@ -511,7 +511,7 @@ def _reportes(u,p):
         st.session_state[pref+'comentario']=base['comentario'];st.session_state[pref+'sugerencias']=base['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
     if b.button('Analizar y sintetizar con GearBot'):
         try:
-            with st.spinner('GearBot prepara el resumen…'):
+            with st.spinner('GearBot analiza los registros y prepara la conclusión. Las bitácoras extensas se revisan en partes…'):
                 nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')},novedades)
             st.session_state[pref+'comentario']=nuevo['comentario'];st.session_state[pref+'sugerencias']=nuevo['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
             st.session_state.pop(pref+'error_ia',None)
