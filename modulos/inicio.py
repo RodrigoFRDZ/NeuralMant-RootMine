@@ -77,7 +77,7 @@ def mostrar_inicio() -> None:
     )
     cbot, ctext = st.columns([0.72, 3.3], gap="medium", vertical_alignment="center")
     with cbot:
-        mostrar_gearbot(compacto=True)
+        mostrar_gearbot(compacto=True,modo="bienvenida")
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
@@ -111,7 +111,7 @@ def mostrar_rootmine() -> None:
 
     cbot, ctext = st.columns([0.72, 3.3], gap="medium", vertical_alignment="center")
     with cbot:
-        mostrar_gearbot(compacto=True)
+        mostrar_gearbot(compacto=True,modo="bienvenida")
     with ctext:
         st.markdown(
             '''<div class="gearbot-speech"><div class="speech-title">👋 Soy GearBot</div>
