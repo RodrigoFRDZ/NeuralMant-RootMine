@@ -26,7 +26,7 @@ def generar_pdf(correo,programa,corte,fotos=False):
     if fotos:
         for d in corte['trabajos']:
             permitidas=set(d.get('fotos',[]))
-            if permitidas:imagenes[d['id']]=[f for f in db.evidencia(correo,programa,d['id']) if f['id'] in permitidas][-2:]
+            if permitidas:imagenes[d['id']]=[f for f in db.evidencia(correo,programa,d['id']) if f['id'] in permitidas]
     return render_pdf(corte,imagenes)
 
 def render_pdf(corte,imagenes=None):
@@ -120,19 +120,22 @@ def render_pdf(corte,imagenes=None):
     if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):
         elementos.append(p('Indicaciones adicionales de la entrega',estilos['Heading2']))
         elementos.extend(parrafos(corte['sugerencias']))
-    # Bounded selection: one image per area observation or activity, area findings first.
+    # Todas las fotos recuperadas, con su actividad/novedad de origen.
     seleccion=[]
+    esperadas=sum(len(a.get('fotos',[])) for a in novedades)+sum(len(d.get('fotos',[])) for d in filas)
     for a in sorted([a for a in novedades if a.get('fotos')],key=lambda a:a.get('estado')!='Abierto'):
-        f=a['fotos'][0]
-        seleccion.append((base64.b64decode(f['contenido']),a['area']+' · '+a['categoria']+' · '+a['estado'],completo(a['mensaje']),a['nombre']+' · '+_fecha(a['fecha'])))
+        for f in a['fotos']:
+            seleccion.append((base64.b64decode(f['contenido']),a['area']+' · '+a['categoria']+' · '+a['estado'],completo(a['mensaje']),f.get('nombre','Imagen')+' · '+a['nombre']+' · '+_fecha(a['fecha'])))
     for d in filas:
-        fotos_trabajo=imagenes.get(d.get('id'),[])
-        if fotos_trabajo:
-            f=fotos_trabajo[-1];fecha=f.get('fecha')
+        for f in imagenes.get(d.get('id'),[]):
+            fecha=f.get('fecha')
             seleccion.append((f['contenido'],d['descripcion']+' · '+d['area'],f"{d['estado']} · Prueba: {d['prueba']}",str(f.get('nombre','Imagen'))+' · '+str(f.get('usuario',''))+' · '+_fecha(fecha.isoformat() if hasattr(fecha,'isoformat') else fecha)))
     if seleccion:
-        cabecera_fotos=[p('05 / Evidencia fotográfica seleccionada',estilos['Heading2']),p('Hasta seis imágenes, una por novedad o actividad. '+('Este PDF conserva la selección del programa cerrado.' if corte.get('final') else 'El registro completo permanece disponible en el programa activo.'),nota)]
-        for i,(contenido,titulo,contexto,autor) in enumerate(seleccion[:6]):
+        conteo=f'Se incluyen {len(seleccion)} de {max(esperadas,len(seleccion))} imágenes registradas en este corte.'
+        if len(seleccion)<esperadas:conteo+=' Atención: faltan imágenes por recuperar; revisar los adjuntos del programa.'
+        cabecera_fotos=[p('05 / Evidencia fotográfica',estilos['Heading2']),p(conteo,nota)]
+        for i,(contenido,titulo,contexto,autor) in enumerate(seleccion):
+            titulo=f'Foto {i+1} de {len(seleccion)} · '+titulo
             im=Image(BytesIO(contenido));im._restrictSize(ancho,210);im.hAlign='LEFT'
             cabecera=(cabecera_fotos if i==0 else [])+[p(titulo,etiqueta),p(autor,metadato),Spacer(1,6),im,Spacer(1,5)]
             leyenda=p(contexto,nota)
@@ -141,8 +144,7 @@ def render_pdf(corte,imagenes=None):
             elementos.append(CondPageBreak(min(alto+inicio_leyenda+8,doc.height-20)))
             elementos.append(KeepTogether(cabecera))
             elementos.extend([leyenda,Spacer(1,12)])
-        if len(seleccion)>6:elementos.append(p(f'Se muestran 6 de {len(seleccion)} registros con evidencia. La selección no representa aprobación ni resolución.',nota))
-    else:elementos.extend([p('05 / Evidencia fotográfica',estilos['Heading2']),p('No hay imágenes adjuntas disponibles para este corte.',nota)])
+    else:elementos.extend([p('05 / Evidencia fotográfica',estilos['Heading2']),p(f'No se recuperaron las {esperadas} imágenes registradas. Revisar los adjuntos del programa.' if esperadas else 'No hay imágenes adjuntas disponibles para este corte.',nota)])
     def pie(canvas,document):
         canvas.setStrokeColor(naranja);canvas.setLineWidth(.5);canvas.line(36,28,A4[0]-36,28)
         canvas.setFont('Trabajo-Regular',8);canvas.setFillColor(tinta);canvas.drawString(36,16,'NeuralMant · Informe ejecutivo de mantenimiento');canvas.drawRightString(A4[0]-36,16,f'Página {document.page}')

@@ -320,6 +320,7 @@ def _chat(u,n):
         st.write(f"**{area} · {d['descripcion']}**")
         st.caption(f"{etiqueta_estado(d)} · Avance: {str(d['avance'])+'%' if d['avance'] is not None else 'Por estimar'} · Prueba: {d['prueba']}")
         if d.get('pendiente'):st.write('**Pendiente:** '+d['pendiente'])
+    _galeria_trabajo(u,n,d)
     st.caption('BITÁCORA DEL TRABAJO · últimos registros')
     for h in [h for h in d['historial'] if not h.get('automatico')][-6:]:
         with st.chat_message('user'):
@@ -338,6 +339,7 @@ def _chat(u,n):
             st.session_state.pop(pendiente_key,None);_refrescar_chat()
     with st.expander('Adjuntar fotos (opcional)'):
         adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
+        if adjuntos:st.caption(f'{len(adjuntos)} foto(s) seleccionadas. Se guardan al enviar el comentario.')
     escrito=st.chat_input('Escribe tu observación o responde a GearBot…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
     if escrito:
         if len(escrito)>10000 or len(adjuntos or [])>3 or any(f.size>2*1024*1024 for f in adjuntos or []):
@@ -370,6 +372,7 @@ def _chat(u,n):
                     db.encolar_novedad(u['correo'],n,ident,version,mensaje);iniciar()
                     st.session_state['trab_flash']='Novedad guardada. GearBot está actualizando el avance; puedes seguir recorriendo la planta.'
                 except ValueError as exc:st.session_state['trab_flash']=str(exc)
+            if fotos:st.session_state['trab_flash']+=f' {len(fotos)} foto(s) guardadas correctamente.'
             st.session_state.pop(f'trab_revision_{n}_{ident}',None)
             st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{ident}',f'trab_form_{ident}_']
             _refrescar_chat()
@@ -394,22 +397,50 @@ def _chat(u,n):
 
 
 
+def _galeria_trabajo(u,n,d):
+    registradas=len(d.get('fotos',[]))
+    if not registradas:
+        st.caption('Fotos guardadas en esta actividad: 0');return
+    try:fotos=db.evidencia(u['correo'],n,d['id'])
+    except (ValueError,SQLAlchemyError):
+        st.warning('No se pudieron comprobar las fotos guardadas. Intenta volver a abrir la actividad.');return
+    st.caption(f'Fotos guardadas en esta actividad: {len(fotos)}')
+    if len(fotos)!=registradas:st.warning(f'El trabajo registra {registradas} fotos y se recuperaron {len(fotos)}. Revisa los adjuntos antes de cerrar el programa.')
+    with st.expander(f'Ver fotos guardadas ({len(fotos)})'):
+        columnas=st.columns(3)
+        for i,f in enumerate(fotos):
+            fecha=f.get('fecha');fecha=fecha.isoformat() if hasattr(fecha,'isoformat') else fecha
+            columnas[i%3].image(f['contenido'],caption=f['nombre']+' · '+str(f.get('usuario',''))+' · '+_fecha(fecha),width='stretch')
+
+
+def _galeria_area(registros):
+    fotos=[(r,f) for r in registros for f in r.get('fotos',[])]
+    st.caption(f'Fotos guardadas en las novedades de esta área: {len(fotos)}')
+    if fotos:
+        with st.expander(f'Ver todas las fotos del área ({len(fotos)})'):
+            columnas=st.columns(3)
+            for i,(r,f) in enumerate(fotos):
+                columnas[i%3].image(base64.b64decode(f['contenido']),caption=f['nombre']+' · '+r['nombre']+' · '+_fecha(r['fecha']),width='stretch')
+
+
 def _chat_area(u,n,area):
     from motores.foco_partida import CATEGORIAS
     pref=f'trab_area_{n}_{area}_'
     registros=area_db.listar(u['correo'],n,area)
     st.write('**Novedades de '+area+'**')
     st.caption('Seguridad, calidad, trabajos no informados o cualquier observación del área. No cambia el avance de las actividades.')
+    _galeria_area(registros)
     for r in registros[-8:]:
         with st.chat_message('user'):
             st.caption(f"{r['nombre']} · {_fecha(r['fecha'])} · {r['categoria']} · {r['estado']}")
             st.write(r['mensaje'])
-            for foto in r.get('fotos',[]):st.image(base64.b64decode(foto['contenido']),caption=foto['nombre'],width=360)
+            if r.get('fotos'):st.caption(f"{len(r['fotos'])} foto(s) guardadas con esta novedad. Puedes verlas en la galería del área.")
             if r.get('cierre'):st.caption('Resolución: '+r['cierre']['mensaje'])
     categoria=st.selectbox('Tipo de novedad',[c for c in CATEGORIAS if c!='Automática'],index=5,key=pref+'categoria')
     st.caption('Explica en el comentario lo observado, sus consecuencias y lo que falta por resolver, si corresponde.')
     revision=st.session_state.get(pref+'revision_fotos',0)
     fotos=st.file_uploader('Imágenes de la novedad (opcional, máximo 3 de 2 MB)',type=['jpg','jpeg','png'],accept_multiple_files=True,key=pref+'fotos_'+str(revision))
+    if fotos:st.caption(f'{len(fotos)} imagen(es) seleccionadas. Se guardan al enviar la novedad.')
     pend=st.session_state.get(pref+'pendiente')
     escrito=st.chat_input('¿Qué observaste en '+area+'?',key=pref+'mensaje',disabled=bool(pend),max_chars=10000)
     guardar=None
@@ -425,7 +456,7 @@ def _chat_area(u,n,area):
             area_db.guardar(u['correo'],n,area,**guardar)
             st.session_state.pop(pref+'pendiente',None)
             st.session_state[pref+'revision_fotos']=revision+1
-            st.session_state['trab_flash']='Novedad del área guardada y disponible para el informe.';_refrescar_chat()
+            st.session_state['trab_flash']='Novedad del área guardada y disponible para el informe.'+(f" {len(guardar.get('fotos',[]))} foto(s) guardadas correctamente." if guardar.get('fotos') else '');_refrescar_chat()
         except ValueError as exc:st.error(str(exc))
         except SQLAlchemyError:st.error('No se pudo guardar ahora. La novedad se conserva para reintentar.')
     abiertos=[r for r in registros if r['estado']=='Abierto' and not r.get('resuelve')]
@@ -498,6 +529,8 @@ def _reportes(u,p):
     st.subheader('Informe ejecutivo de ejecución y partida')
     st.caption('Resumen de lo registrado en el programa hasta ahora. Puedes ajustar el texto antes de descargar; los estados y porcentajes del trabajo se conservan.')
     novedades=area_db.listar(u['correo'],n)
+    total_fotos=sum(len(d.get('fotos',[])) for d in filas)+sum(len(a.get('fotos',[])) for a in novedades)
+    st.caption(f'Fotos registradas para este informe: {total_fotos}. El PDF incluye todas las fotos recuperadas de este corte.')
     base=resumen_base(filas,novedades);pref=f'trab_resumen_{n}_'
     firma=hashlib.sha256(json.dumps(dict(trabajos=filas,novedades=[{k:v for k,v in a.items() if k!='fotos'} for a in novedades]),ensure_ascii=False,sort_keys=True).encode()).hexdigest()
     previo=st.session_state.get(pref+'base')
