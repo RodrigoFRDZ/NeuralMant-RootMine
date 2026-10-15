@@ -7,8 +7,9 @@ from collections import Counter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_JUSTIFY,TA_LEFT
 from reportlab.lib.styles import getSampleStyleSheet,ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle,Image,PageBreak
+from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableStyle,Image,PageBreak,CondPageBreak
 from reportlab.lib.pagesizes import A4
 from database import trabajos as db
 from motores.foco_partida import focos
@@ -44,28 +45,37 @@ def render_pdf(corte,imagenes=None):
         estilo.textColor=tinta;estilo.fontName='Trabajo-Bold' if estilo.name.startswith(('Heading','Title')) else 'Trabajo-Regular'
     estilos['Title'].fontSize=23;estilos['Title'].leading=28;estilos['Title'].alignment=0
     estilos['Heading2'].fontSize=12;estilos['Heading2'].leading=16;estilos['Heading2'].spaceBefore=16;estilos['Heading2'].spaceAfter=8
+    estilos['Heading2'].keepWithNext=True
+    estilos['Heading2'].allowWidows=0;estilos['Heading2'].allowOrphans=0
     normal=estilos['BodyText'];normal.fontSize=9;normal.leading=13
-    nota=ParagraphStyle('Nota',parent=normal,fontSize=8,leading=11,spaceAfter=5)
-    etiqueta=ParagraphStyle('Etiqueta',parent=normal,fontName='Trabajo-Bold',fontSize=8,leading=11)
+    normal.alignment=TA_JUSTIFY;normal.spaceAfter=7
+    normal.allowWidows=0;normal.allowOrphans=0;normal.justifyBreaks=0;normal.splitLongWords=1
+    nota=ParagraphStyle('Nota',parent=normal,fontSize=8,leading=11,spaceAfter=5,alignment=TA_JUSTIFY)
+    celda=ParagraphStyle('Celda',parent=nota,alignment=TA_LEFT,spaceAfter=0)
+    metadato=ParagraphStyle('Metadato',parent=nota,alignment=TA_LEFT)
+    etiqueta=ParagraphStyle('Etiqueta',parent=normal,fontName='Trabajo-Bold',fontSize=8,leading=11,alignment=TA_LEFT)
     blanco=ParagraphStyle('Blanco',parent=etiqueta,textColor=marfil)
-    dato=ParagraphStyle('Indicador',parent=normal,fontName='Trabajo-Bold',fontSize=20,leading=25)
+    dato=ParagraphStyle('Indicador',parent=normal,fontName='Trabajo-Bold',fontSize=20,leading=25,alignment=TA_LEFT)
     def p(texto,estilo=normal):return Paragraph(escape(str(texto or '')).replace('\n','<br/>'),estilo)
     def breve(texto,limite=230):
         texto=' '.join(str(texto or '').split())
         return texto if len(texto)<=limite else texto[:limite].rsplit(' ',1)[0]+'…'
-    out=BytesIO();ancho=A4[0]-72
+    def parrafos(texto):
+        return [p(linea.strip()) for linea in str(texto or '').split('\n') if linea.strip()]
+    out=BytesIO();ancho=A4[0]-84
     doc=SimpleDocTemplate(out,pagesize=A4,rightMargin=36,leftMargin=36,topMargin=36,bottomMargin=40,title='NeuralMant - Informe ejecutivo de mantenimiento',author='NeuralMant',subject=corte['titulo'])
     elementos=[p('NEURALMANT / MANTENIMIENTO',etiqueta),Spacer(1,10),p('Ejecución y preparación de partida',estilos['Title']),p(corte['titulo'],estilos['Heading2']),
         p(f"Centro {corte['centro']} · {corte['fecha']} · Turno {corte['turno']}",nota),p(f"Corte: {_fecha(corte['generado'])} (Chile) · Preparado por {corte['nombre']}",nota),Spacer(1,10)]
     abiertos=[a for a in novedades if a.get('estado')=='Abierto' and not a.get('resuelve')]
     def listo(d):return d['estado']=='Terminado' and not d.get('pendiente') and (d['prueba']=='Aprobada' or (d['prueba']=='No requerida' and bool(d.get('detalle_prueba','').strip())))
     indicadores=[(f"{sum(d['estado']=='Terminado' for d in filas)} / {len(filas)}",'Actividades terminadas'),(str(sum(listo(d) for d in filas)),'Terminadas y verificadas'),(str(sum(d['estado']=='Detenido' for d in filas)),'Trabajos detenidos'),(str(len(abiertos)),'Novedades abiertas')]
-    tabla=Table([[[p(v,dato),p(t,nota)] for v,t in indicadores]],colWidths=[ancho/4]*4)
+    tabla=Table([[[p(v,dato),p(t,metadato)] for v,t in indicadores]],colWidths=[ancho/4]*4)
     tabla.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,-1),marfil),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),10),('BOTTOMPADDING',(0,0),(-1,-1),10)]));elementos.append(tabla)
-    elementos.extend([p('01 / Conclusión ejecutiva',estilos['Heading2']),p(corte.get('comentario') or resumen_base(filas,novedades)['comentario'])])
+    elementos.append(p('01 / Conclusión ejecutiva',estilos['Heading2']))
+    elementos.extend(parrafos(corte.get('comentario') or resumen_base(filas,novedades)['comentario']))
     elementos.append(p('“Terminadas y verificadas”: sin pendientes informados y con prueba aprobada o exclusión justificada. No constituye autorización de partida.',nota))
     def tabla_datos(headers,rows,widths):
-        datos=[[p(h,blanco) for h in headers]]+[[p(v,nota) for v in row] for row in rows]
+        datos=[[p(h,blanco) for h in headers]]+[[p(v,celda) for v in row] for row in rows]
         t=Table(datos,colWidths=[ancho*w for w in widths],repeatRows=1,hAlign='LEFT',splitInRow=1)
         t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),tinta),('ROWBACKGROUNDS',(0,1),(-1,-1),[colors.white,marfil]),('VALIGN',(0,0),(-1,-1),'TOP'),('TOPPADDING',(0,0),(-1,-1),8),('BOTTOMPADDING',(0,0),(-1,-1),8),('LEFTPADDING',(0,0),(-1,-1),8),('RIGHTPADDING',(0,0),(-1,-1),8)]))
         elementos.append(t)
@@ -107,7 +117,8 @@ def render_pdf(corte,imagenes=None):
     if rows:tabla_datos(['Área / tipo / estado','Antecedente relevante (extracto)','Tratamiento / trazabilidad'],rows,[.25,.43,.32])
     else:elementos.append(p('Sin novedades generales registradas.',nota))
     if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):
-        elementos.extend([p('Indicaciones adicionales de la entrega',estilos['Heading2']),p(corte['sugerencias'])])
+        elementos.append(p('Indicaciones adicionales de la entrega',estilos['Heading2']))
+        elementos.extend(parrafos(corte['sugerencias']))
     # Bounded selection: one image per area observation or activity, area findings first.
     seleccion=[]
     for a in sorted([a for a in novedades if a.get('fotos')],key=lambda a:a.get('estado')!='Abierto'):
@@ -128,5 +139,21 @@ def render_pdf(corte,imagenes=None):
     def pie(canvas,document):
         canvas.setStrokeColor(naranja);canvas.setLineWidth(.5);canvas.line(36,28,A4[0]-36,28)
         canvas.setFont('Trabajo-Regular',8);canvas.setFillColor(tinta);canvas.drawString(36,16,'NeuralMant · Informe ejecutivo de mantenimiento');canvas.drawRightString(A4[0]-36,16,f'Página {document.page}')
-    doc.build(elementos,onFirstPage=pie,onLaterPages=pie)
+    # Reserva espacio para el título y el inicio real del bloque siguiente.
+    # Las tablas extensas siguen paginándose y repitiendo su cabecera.
+    ordenados=[]
+    for i,elemento in enumerate(elementos):
+        if isinstance(elemento,Paragraph) and elemento.style.name=='Heading2' and i+1<len(elementos):
+            siguiente=elementos[i+1]
+            alto_titulo=elemento.wrap(ancho,100000)[1]+elemento.getSpaceBefore()+elemento.getSpaceAfter()
+            if isinstance(siguiente,Table):
+                elemento.keepWithNext=False
+                siguiente.wrap(ancho,100000)
+                comienzo=min(sum(siguiente._rowHeights[:2]),doc.height*.6)
+            elif isinstance(siguiente,Paragraph):
+                comienzo=min(siguiente.wrap(ancho,100000)[1],siguiente.style.leading*3)+siguiente.getSpaceBefore()
+            else:comienzo=45
+            ordenados.append(CondPageBreak(alto_titulo+comienzo+8))
+        ordenados.append(elemento)
+    doc.build(ordenados,onFirstPage=pie,onLaterPages=pie)
     return out.getvalue()

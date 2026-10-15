@@ -239,6 +239,12 @@ def _refrescar_chat():
     st.rerun(scope='fragment' if contexto and contexto.fragment_ids_this_run else 'app')
 
 
+def falta_validacion_funcionamiento(d):
+    if d.get('estado')!='Terminado':return False
+    if (d.get('dialogo_prueba') or {}).get('paso'):return True
+    return d.get('prueba')!='Aprobada' and not (d.get('prueba')=='No requerida' and bool(d.get('detalle_prueba','').strip()))
+
+
 @st.fragment
 def _chat(u,n):
     _limpiar_formularios()
@@ -260,6 +266,7 @@ def _chat(u,n):
     def cambiar_area():
         st.session_state.pop(seleccionado_key,None)
         st.session_state.pop(f'trab_chat_incluir_terminados_{n}',None)
+        st.session_state.pop(f'trab_chat_solo_validacion_{n}',None)
     with st.container(border=True):
         st.markdown('<span class="trab-chat-area-anchor"></span>',unsafe_allow_html=True)
         st.write('**¿A qué área vamos ahora?**')
@@ -275,12 +282,19 @@ def _chat(u,n):
     with st.chat_message('assistant'):
         st.write(f"Estamos en **{area}**. Hay **{len(pendientes)} trabajos por completar**. ¿Qué trabajo revisamos?")
     st.caption('🟡 Pendiente · 🟠 En proceso · 🟢 Terminada · 🔴 Detenida')
-    if len(grupo)>len(pendientes):st.caption(f'{len(grupo)-len(pendientes)} terminados. Activa el filtro para agregar comentarios o registrar sus pruebas.')
-    mostrar_todos=st.checkbox('Mostrar trabajos terminados',key=f'trab_chat_incluir_terminados_{n}')
-    visibles=grupo if mostrar_todos else pendientes
+    validaciones=[d for d in grupo if falta_validacion_funcionamiento(d)]
+    validacion_key=f'trab_chat_solo_validacion_{n}'
+    filtro_activo=bool(st.session_state.get(validacion_key))
+    solo_validacion=st.toggle('Solo pendientes de validación de funcionamiento',key=validacion_key,
+        disabled=not validaciones and not filtro_activo,help='Trabajos terminados cuya prueba está pendiente, en curso o fallida. Desaparecen al aprobar la prueba o documentar que no la requieren.')
+    if validaciones:st.caption(f'{len(validaciones)} trabajos terminados pendientes de validación de funcionamiento en {area}.')
+    if len(grupo)>len(pendientes):st.caption(f'{len(grupo)-len(pendientes)} terminados. Puedes revisar sus pruebas o consultar todos los terminados.')
+    mostrar_todos=st.checkbox('Mostrar trabajos terminados',key=f'trab_chat_incluir_terminados_{n}',disabled=solo_validacion)
+    visibles=validaciones if solo_validacion else (grupo if mostrar_todos else pendientes)
     actual=st.session_state.get(seleccionado_key)
     if actual and actual not in {d['id'] for d in visibles}:st.session_state.pop(seleccionado_key,None)
-    if not visibles:st.success('Todas las actividades del área tienen su ejecución terminada. Puedes dejar una novedad del área o activar el filtro de terminados.')
+    if not visibles:
+        st.success('No quedan trabajos pendientes de validación de funcionamiento en esta área.' if solo_validacion else 'Todas las actividades del área tienen su ejecución terminada. Puedes dejar una novedad del área o activar el filtro de terminados.')
     if st.session_state.get(seleccionado_key) is None:st.session_state[seleccionado_key]=0
     ident=st.selectbox('Actividad o novedad del área',[0]+[d['id'] for d in visibles],key=seleccionado_key,
         format_func=lambda i:'📝 Novedad del área · sin actividad asociada' if i==0 else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {etiqueta_estado(d)} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
