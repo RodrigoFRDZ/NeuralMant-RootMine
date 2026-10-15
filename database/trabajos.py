@@ -76,6 +76,16 @@ class NovedadIA(Base):
     actualizado: Mapped[datetime]=mapped_column(DateTime,default=datetime.utcnow)
 
 
+class NovedadArea(Base):
+    __tablename__='novedad_area_trabajo'
+    id: Mapped[int]=mapped_column(primary_key=True)
+    programa: Mapped[int]=mapped_column(ForeignKey('programa_fin_semana.id'),index=True)
+    clave: Mapped[str]=mapped_column(String(36),unique=True)
+    firma: Mapped[str]=mapped_column(String(64))
+    area: Mapped[str]=mapped_column(String(180))
+    datos: Mapped[str]=mapped_column(Text)
+
+
 def _tres_meses(fecha):
     mes=fecha.month+3;anio=fecha.year+(mes-1)//12;mes=(mes-1)%12+1
     return fecha.replace(year=anio,month=mes,day=min(fecha.day,calendar.monthrange(anio,mes)[1]))
@@ -120,6 +130,8 @@ def _archivar(s,p,u):
     if s.get(HistoricoTrabajo,p.id):return
     filas=[_fila(t) for t in s.scalars(select(TrabajoFinSemana).where(TrabajoFinSemana.programa==p.id).order_by(TrabajoFinSemana.id))]
     entregas=[json.loads(c.datos) for c in s.scalars(select(CierreTrabajo).where(CierreTrabajo.programa==p.id).order_by(CierreTrabajo.id))]
+    from database.novedades_area import _listar
+    novedades_area=_listar(s,p.id)
     fotos={}
     for d in filas:
         fotos[d['id']]=[]
@@ -131,10 +143,11 @@ def _archivar(s,p,u):
     ahora=datetime.utcnow()
     sin_procesar=[f"Trabajo #{j.trabajo}: {j.estado} · {j.detalle or 'Procesamiento sin terminar'}" for j in s.scalars(select(NovedadIA).where(NovedadIA.programa==p.id,NovedadIA.estado.in_(['pendiente','procesando','pregunta','error'])))]
     nota_ia='\nNovedades con procesamiento o aclaración pendiente:\n'+'\n'.join(sin_procesar) if sin_procesar else ''
-    corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.'+nota_ia,sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),entregas=entregas,final=True)
+    corte=dict(titulo=p.titulo,centro=p.centro,fecha=p.inicio+' a '+p.fin,turno='Informe final',comentario='Cerrado automáticamente al publicar la siguiente programación. Los estados reflejan lo registrado; los trabajos pendientes no se marcan terminados.'+nota_ia,sugerencias='\n'.join(f"{e['nombre']}: {e['sugerencias']}" for e in entregas if e.get('sugerencias')),autor=u['correo'],nombre=u['nombre'],generado=ahora.isoformat(),trabajos=filas,lineas=lineas(filas),novedades_area=novedades_area,entregas=entregas,final=True)
     pdf=render_pdf(corte,fotos)
     s.add(HistoricoTrabajo(programa=p.id,pdf=pdf,cerrado=ahora,vence=_tres_meses(ahora)));s.flush()
     ids=select(TrabajoFinSemana.id).where(TrabajoFinSemana.programa==p.id)
+    s.execute(delete(NovedadArea).where(NovedadArea.programa==p.id))
     s.execute(delete(NovedadIA).where(NovedadIA.programa==p.id))
     s.execute(delete(FotoTrabajo).where(FotoTrabajo.trabajo.in_(ids)))
     s.execute(delete(CierreTrabajo).where(CierreTrabajo.programa==p.id))

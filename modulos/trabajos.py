@@ -4,9 +4,11 @@ from html import escape
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from uuid import uuid4
+from sqlalchemy.exc import SQLAlchemyError
 import pandas as pd
 import streamlit as st
 from database import trabajos as db
+from database import novedades_area as area_db
 from database.usuarios import cargar_centros
 from modulos.programacion_pdf import texto_pdf, extraer_trabajos
 from reportes.trabajos import generar_pdf
@@ -164,6 +166,12 @@ def _tablero(u,n):
         st.subheader('Requiere atención')
         for d in alertas[:5]:st.warning(f"{d['area']} · OT {d.get('ot') or '#'+str(d['id'])}: {d.get('pendiente') or 'Trabajo detenido'}")
         if len(alertas)>5:st.caption(f"Hay {len(alertas)} trabajos con pendientes o bloqueos; consulta el informe para el detalle completo.")
+    novedades=area_db.listar(u['correo'],n)
+    if novedades:
+        with st.expander('Novedades por área · '+str(sum(r['estado']=='Abierto' for r in novedades))+' abiertas'):
+            for r in novedades:
+                st.write(f"**{r['area']} · {r['categoria']} · {r['estado']}** — {r['mensaje']}")
+                st.caption(f"{r['nombre']} · {_fecha(r['fecha'])} · Impacto: {r['impacto']}")
     st.caption('Descarga el informe en Reportes de turno para revisar trabajos, comentarios, responsables de cada registro y evidencias.')
 
 
@@ -235,7 +243,6 @@ def _chat(u,n):
     if st.session_state.get('trab_flash'):st.success(st.session_state.pop('trab_flash'))
     if not db.puede_chat(u):
         st.error('Solo supervisores, coordinadores de mantenimiento o administración pueden registrar mensajes.');return
-    _enlace_campo(u,n)
     filas=db.trabajos(u['correo'],n)
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
     if not opciones:
@@ -271,10 +278,13 @@ def _chat(u,n):
     visibles=grupo if mostrar_todos else pendientes
     actual=st.session_state.get(seleccionado_key)
     if actual and actual not in {d['id'] for d in visibles}:st.session_state.pop(seleccionado_key,None)
-    if not visibles:st.success('Todas las actividades del área tienen su ejecución terminada. Puedes mostrar las terminadas para comentar o revisar pruebas.');return
-    ident=st.selectbox('¿Qué trabajo revisamos?',[None]+[d['id'] for d in visibles],key=seleccionado_key,
-        format_func=lambda i:'Selecciona un trabajo' if i is None else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {etiqueta_estado(d)} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
-    if not ident:return
+    if not visibles:st.success('Todas las actividades del área tienen su ejecución terminada. Puedes dejar una novedad del área o activar el filtro de terminados.')
+    if st.session_state.get(seleccionado_key) is None:st.session_state[seleccionado_key]=0
+    ident=st.selectbox('Actividad o novedad del área',[0]+[d['id'] for d in visibles],key=seleccionado_key,
+        format_func=lambda i:'📝 Novedad del área · sin actividad asociada' if i==0 else next(f"OT {d.get('ot') or '#'+str(i)} · {d['descripcion']} · {etiqueta_estado(d)} · {str(d['avance'])+'%' if d['avance'] is not None else 'Sin porcentaje'} · Prueba: {d['prueba']}" for d in visibles if d['id']==i))
+    if ident==0:
+        _chat_area(u,n,area);return
+    if ident is None:return
     d=next(x for x in grupo if x['id']==ident)
     with st.chat_message('assistant'):
         st.write(f"**{area} · {d['descripcion']}**")
@@ -350,19 +360,54 @@ def _chat(u,n):
 
 
 
-def _enlace_campo(u,n):
-    from campo.api import instalar_en_streamlit, diagnostico
-    if not instalar_en_streamlit():
-        st.warning('No se pudo habilitar la bitácora sin señal en este servidor.')
-        if st.button('Reintentar preparar modo sin señal',key=f'trab_campo_reintento_{n}'):st.rerun()
-        if db.gestor(u):st.code(diagnostico())
-        return
-    from database.campo import emitir_ticket
-    from streamlit import config
-    prefijo=config.get_option('server.baseUrlPath') or ''
-    ruta=('/'+prefijo.strip('/') if prefijo else '')+'/neuralmant-campo/?acceso='+emitir_ticket(u['correo'],n)
-    st.link_button('Abrir bitácora · con y sin señal',ruta,type='primary')
-    st.caption('Ábrela con conexión antes de ingresar a la planta. Espera el indicador “Modo sin señal preparado”; las novedades se sincronizan al recuperar conexión.')
+def _chat_area(u,n,area):
+    from motores.foco_partida import CATEGORIAS,IMPACTOS
+    pref=f'trab_area_{n}_{area}_'
+    registros=area_db.listar(u['correo'],n,area)
+    st.write('**Novedades de '+area+'**')
+    st.caption('Seguridad, calidad, trabajos no informados o cualquier observación del área. No cambia el avance de las actividades.')
+    for r in registros[-8:]:
+        with st.chat_message('user'):
+            st.caption(f"{r['nombre']} · {_fecha(r['fecha'])} · {r['categoria']} · {r['estado']}")
+            st.write(r['mensaje'])
+            if r.get('cierre'):st.caption('Resolución: '+r['cierre']['mensaje'])
+    with st.expander('Tipo de hallazgo e impacto (opcional)'):
+        categoria=st.selectbox('Tipo de novedad',CATEGORIAS,key=pref+'categoria')
+        impacto=st.selectbox('Impacto informado',IMPACTOS,key=pref+'impacto')
+        st.caption('La clasificación por texto es orientativa. Si no está claro el efecto, queda por evaluar; no se aprueba la partida automáticamente.')
+    pend=st.session_state.get(pref+'pendiente')
+    escrito=st.chat_input('¿Qué observaste en '+area+'?',key=pref+'mensaje',disabled=bool(pend),max_chars=10000)
+    guardar=None
+    if escrito:
+        guardar=dict(mensaje=escrito,clave=str(uuid4()),categoria=categoria,impacto=impacto,capturado=datetime.utcnow().isoformat()+'Z')
+        st.session_state[pref+'pendiente']=guardar
+    if pend:
+        st.warning('Esta novedad todavía no se guardó. Conserva su área original.')
+        st.write(pend['mensaje'])
+        if st.button('Reintentar novedad del área',key=pref+'reintentar'):guardar=pend
+    if guardar:
+        try:
+            area_db.guardar(u['correo'],n,area,**guardar)
+            st.session_state.pop(pref+'pendiente',None)
+            st.session_state['trab_flash']='Novedad del área guardada y disponible para el informe.';_refrescar_chat()
+        except ValueError as exc:st.error(str(exc))
+        except SQLAlchemyError:st.error('No se pudo guardar ahora. La novedad se conserva para reintentar.')
+    abiertos=[r for r in registros if r['estado']=='Abierto' and not r.get('resuelve')]
+    if abiertos:
+        with st.expander(f'Seguimiento de hallazgos abiertos ({len(abiertos)})'):
+            resolver=st.selectbox('Hallazgo a resolver',[None]+[r['id'] for r in abiertos],format_func=lambda i:'Elige el hallazgo' if i is None else next(r['mensaje'][:100] for r in abiertos if r['id']==i),key=pref+'resolver')
+            texto=st.text_area('Qué se corrigió o verificó',key=pref+'resolucion')
+            if st.button('Registrar resolución',key=pref+'cerrar'):
+                if not resolver or not texto.strip():st.warning('Elige el hallazgo y describe qué se corrigió.')
+                else:
+                    clave_key=pref+'clave_cierre_'+hashlib.sha256((str(resolver)+':'+texto).encode()).hexdigest()
+                    st.session_state.setdefault(clave_key,str(uuid4()))
+                    try:
+                        area_db.guardar(u['correo'],n,area,texto,st.session_state[clave_key],resuelve=resolver)
+                        st.session_state.pop(clave_key,None)
+                        st.session_state['trab_limpiar_form']=[pref+'resolver',pref+'resolucion']
+                        st.session_state['trab_flash']='Resolución registrada con autor y fecha.';_refrescar_chat()
+                    except ValueError as exc:st.error(str(exc))
 
 
 def _pruebas_visibles(u,n,d):
@@ -409,9 +454,10 @@ def _reportes(u,p):
     n=p['id'];ahora=datetime.now(ZoneInfo('America/Santiago'));fecha=ahora.date().isoformat()
     turno='Día' if 7<=ahora.hour<19 else 'Noche'
     filas=db.trabajos(u['correo'],n)
-    st.subheader('Informe listo para compartir')
+    st.subheader('Informe ejecutivo de ejecución y partida')
     st.caption('Resumen de lo registrado en el programa hasta ahora. Puedes ajustar el texto antes de descargar; los estados y porcentajes del trabajo se conservan.')
-    base=resumen_base(filas);pref=f'trab_resumen_{n}_'
+    novedades=area_db.listar(u['correo'],n)
+    base=resumen_base(filas,novedades);pref=f'trab_resumen_{n}_'
     firma=hashlib.sha256(str(base).encode()).hexdigest()
     previo=st.session_state.get(pref+'base')
     if previo is None or all(st.session_state.get(pref+k)==previo[k] for k in ('comentario','sugerencias')):
@@ -425,13 +471,13 @@ def _reportes(u,p):
     if b.button('Mejorar redacción con GearBot'):
         try:
             with st.spinner('GearBot prepara el resumen…'):
-                nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')})
+                nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')},novedades)
             st.session_state[pref+'comentario']=nuevo['comentario'];st.session_state[pref+'sugerencias']=nuevo['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
             st.success('Redacción ajustada. Revisa el resumen antes de descargar.')
         except Exception:st.warning('GearBot no está disponible ahora. Tu resumen se conserva y puedes descargarlo.')
-    comentario=st.text_area('Resumen de ejecución',key=pref+'comentario',height=240)
-    sugerencias=st.text_area('Pendientes y sugerencias',key=pref+'sugerencias',height=120)
-    actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha,turno=turno,comentario=comentario,sugerencias=sugerencias,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas))
+    comentario=st.text_area('Resumen ejecutivo',key=pref+'comentario',height=240)
+    sugerencias=st.text_area('Acciones y focos de seguimiento',key=pref+'sugerencias',height=120)
+    actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha,turno=turno,comentario=comentario,sugerencias=sugerencias,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas),novedades_area=novedades,sugerencias_automaticas=sugerencias==base['sugerencias'])
     pdf=generar_pdf(u['correo'],n,actual,True)
     def registrar_descarga():
         if db.puede_chat(u) and (comentario!=base['comentario'] or sugerencias!=base['sugerencias']):

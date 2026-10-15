@@ -85,7 +85,7 @@ def crear_tablas() -> None:
     if engine.dialect.name == "postgresql":
         with engine.begin() as conexion:
             conexion.execute(text("ALTER TABLE solicitud_material ENABLE ROW LEVEL SECURITY"))
-            for tabla in ("programa_fin_semana", "trabajo_fin_semana", "foto_trabajo", "cierre_trabajo", "historico_trabajo", "novedad_trabajo_ia", "acceso_campo", "recibo_campo"):
+            for tabla in ("programa_fin_semana", "trabajo_fin_semana", "foto_trabajo", "cierre_trabajo", "historico_trabajo", "novedad_trabajo_ia", "acceso_campo", "recibo_campo", "novedad_area_trabajo"):
                 conexion.execute(text(f"ALTER TABLE {tabla} ENABLE ROW LEVEL SECURITY"))
 
     inspector = inspect(engine)
