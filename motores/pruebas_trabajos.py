@@ -2,7 +2,8 @@
 import re
 import unicodedata
 
-PREGUNTAS={'observaciones':'¿Cómo resultaron las pruebas? ¿Se observó alguna anomalía durante el proceso?',
+PREGUNTAS={'realizacion':'¿Se realizaron las pruebas de funcionamiento?',
+ 'observaciones':'¿Cómo resultaron las pruebas? ¿Se observó alguna anomalía durante el proceso?',
  'descripcion':'Describe qué observaste durante la prueba.',
  'impacto':'¿Esta observación impide la partida o el funcionamiento normal del equipo?'}
 
@@ -15,7 +16,11 @@ def transicion(d,accion,texto=''):
     dialogo=dict(d.get('dialogo_prueba') or {})
     paso=dialogo.get('paso')
     if d['estado']!='Terminado':raise ValueError('Registra primero la finalización del trabajo antes de realizar su prueba de funcionamiento.')
-    if accion=='iniciar_prueba':
+    if accion=='posponer_prueba':
+        if d['prueba'] in ('Aprobada','No requerida') or paso not in (None,'','realizacion'):raise ValueError('La prueba ya tiene un resultado o una conversación en curso. Revisa el estado actual.')
+        if d['prueba']=='Pendiente':nuevo['detalle_prueba']='El supervisor informa que las pruebas de funcionamiento aún no se han realizado.'
+        dialogo={'paso':'','postergada':True}
+    elif accion=='iniciar_prueba':
         if d['prueba']=='Aprobada':raise ValueError('La prueba ya está registrada como satisfactoria.')
         nuevo.update(prueba='En prueba',detalle_prueba='El supervisor informa que se realizaron las pruebas. Resultado y observaciones pendientes de registrar.')
         dialogo={'paso':'observaciones'}
@@ -46,6 +51,9 @@ def desde_mensaje(d,mensaje):
     if d['estado']!='Terminado':return None
     paso=(d.get('dialogo_prueba') or {}).get('paso');t=normalizar(mensaje)
     if '%' in mensaje or t in ('trabajo terminado','trabajo finalizado','trabajo completado','iniciado'):return None
+    if paso=='realizacion' or (not paso and d['prueba']=='Pendiente'):
+        if t in ('si','si se realizaron','se realizaron','si se hicieron','se hicieron las pruebas'):return transicion(d,'iniciar_prueba')
+        if t in ('no','aun no','todavia no','no se realizaron','aun no se realizan','pendientes'):return transicion(d,'posponer_prueba')
     if paso=='observaciones':
         if t in ('no','sin observaciones','no hubo observaciones','ninguna','no se observaron anomalias','no se evidenciaron observaciones','todo bien','funcionamiento normal sin observaciones','sin anomalias'):
             return transicion(d,'sin_observaciones')

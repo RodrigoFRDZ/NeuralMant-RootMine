@@ -284,8 +284,10 @@ def actualizar(correo,n,trabajo,version,cambio,fotos=(),mensaje='',_sesion=None)
         elif origen is not None:
             if origen not in ('informado_supervisor','estado_supervisor'):raise ValueError('Origen del avance inválido.')
             d['origen_avance']=origen
+        recien_terminado=d.get('estado')!='Terminado' and estado=='Terminado'
         for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba'):d[k]=cambio.get(k,'')
         if 'dialogo_prueba' in cambio:d['dialogo_prueba']=cambio['dialogo_prueba']
+        if recien_terminado and d['prueba']=='Pendiente':d['dialogo_prueba']={'paso':'realizacion'}
         d.update(actualizado=datetime.utcnow().isoformat(),autor=correo)
         if mensaje.strip():d['ultimo_mensaje']=mensaje.strip()
         h=json.loads(t.historial);h.append(dict(automatico=bool(cambio.get('aplicacion_automatica')),origen_avance=d.get('origen_avance','informado_supervisor'),etapas_confirmadas=d.get('etapas_confirmadas',[]),mensaje=mensaje.strip(),fecha=d['actualizado'],usuario=correo,nombre=u['nombre'],rol=u.get('rol',''),**{k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')},fotos=list(d['fotos'])))
@@ -430,4 +432,4 @@ def registrar_prueba(correo,n,ident,version,accion,texto=''):
         t=s.get(TrabajoFinSemana,ident)
         if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
         cambio=transicion(json.loads(t.datos),accion,texto)
-        return actualizar(correo,n,ident,version,cambio,mensaje=texto or {'iniciar_prueba':'Se realizaron las pruebas de funcionamiento.','sin_observaciones':'Funcionamiento normal, sin observaciones.','con_observaciones':'Se observaron anomalías durante la prueba.','impide_partida':'La observación impide la partida.','no_impide_partida':'La observación no impide la partida ni el funcionamiento normal.'}.get(accion,accion),_sesion=s)
+        return actualizar(correo,n,ident,version,cambio,mensaje=texto or {'posponer_prueba':'Las pruebas de funcionamiento aún no se han realizado. Quedan pendientes de validación.','iniciar_prueba':'Se realizaron las pruebas de funcionamiento.','sin_observaciones':'Funcionamiento normal, sin observaciones.','con_observaciones':'Se observaron anomalías durante la prueba.','impide_partida':'La observación impide la partida.','no_impide_partida':'La observación no impide la partida ni el funcionamiento normal.'}.get(accion,accion),_sesion=s)

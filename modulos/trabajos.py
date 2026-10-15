@@ -255,6 +255,18 @@ def _chat(u,n):
     opciones=[d for d in filas if db.puede_actualizar(u,d)]
     if not opciones:
         st.info('No hay trabajos disponibles para actualizar en esta programación.');return
+    # Mantener la actividad recién terminada hasta responder la pregunta de pruebas.
+    inmediata_key=f'trab_prueba_inmediata_{n}'
+    estados_key=f'trab_chat_estados_{n}'
+    anteriores=st.session_state.get(estados_key,{})
+    seleccionado_antes=st.session_state.get(f'trab_chat_activo_{n}')
+    for d in opciones:
+        if d['id']==seleccionado_antes and d['id'] in anteriores and anteriores[d['id']]!='Terminado' and d['estado']=='Terminado' and falta_validacion_funcionamiento(d):
+            st.session_state[inmediata_key]=d['id']
+    st.session_state[estados_key]={d['id']:d['estado'] for d in opciones}
+    inmediata=next((d for d in opciones if d['id']==st.session_state.get(inmediata_key)),None)
+    if inmediata and not falta_validacion_funcionamiento(inmediata):
+        st.session_state.pop(inmediata_key,None);inmediata=None
     pendiente_key=f'trab_chat_pendiente_{n}'
     seleccionado_key=f'trab_chat_activo_{n}'
     area_key=f'trab_chat_area_{n}'
@@ -267,6 +279,7 @@ def _chat(u,n):
         st.session_state.pop(seleccionado_key,None)
         st.session_state.pop(f'trab_chat_incluir_terminados_{n}',None)
         st.session_state.pop(f'trab_chat_solo_validacion_{n}',None)
+        st.session_state.pop(inmediata_key,None)
     with st.container(border=True):
         st.markdown('<span class="trab-chat-area-anchor"></span>',unsafe_allow_html=True)
         st.write('**¿A qué área vamos ahora?**')
@@ -291,6 +304,7 @@ def _chat(u,n):
     if len(grupo)>len(pendientes):st.caption(f'{len(grupo)-len(pendientes)} terminados. Puedes revisar sus pruebas o consultar todos los terminados.')
     mostrar_todos=st.checkbox('Mostrar trabajos terminados',key=f'trab_chat_incluir_terminados_{n}',disabled=solo_validacion)
     visibles=validaciones if solo_validacion else (grupo if mostrar_todos else pendientes)
+    if inmediata and inmediata['area']==area and inmediata['id'] not in {d['id'] for d in visibles}:visibles=visibles+[inmediata]
     actual=st.session_state.get(seleccionado_key)
     if actual and actual not in {d['id'] for d in visibles}:st.session_state.pop(seleccionado_key,None)
     if not visibles:
@@ -311,7 +325,8 @@ def _chat(u,n):
         with st.chat_message('user'):
             st.caption(f"{h['nombre']} · {_fecha(h['fecha'])}")
             st.write(h.get('mensaje') or f"{h['estado']} · Prueba: {h['prueba']}")
-    with st.chat_message('assistant'):st.write(pregunta_bitacora(d))
+    if d['estado']!='Terminado':
+        with st.chat_message('assistant'):st.write(pregunta_bitacora(d))
     _pruebas_visibles(u,n,d)
     pendiente=st.session_state.get(pendiente_key)
     if pendiente:
@@ -337,13 +352,16 @@ def _chat(u,n):
         from ia.cola_novedades import iniciar
         cambio={k:d[k] for k in ('estado','avance','pendiente','hallazgos','prueba','detalle_prueba')}
         from motores.pruebas_trabajos import desde_mensaje
-        respuesta=desde_mensaje(d,mensaje) if (d.get('dialogo_prueba') or {}).get('paso') else None
+        respuesta=desde_mensaje(d,mensaje)
         inmediato=respuesta or directo(mensaje)
         if respuesta:cambio=respuesta
         elif inmediato:cambio=combinar(d,inmediato)
         try:
             version=db.actualizar(u['correo'],n,ident,version_envio,cambio,fotos,mensaje=mensaje)
             st.session_state.pop(pendiente_key,None)
+            if respuesta and (respuesta.get('dialogo_prueba') or {}).get('postergada'):
+                st.session_state.pop(inmediata_key,None)
+                st.session_state['trab_limpiar_seleccion']=f'trab_chat_activo_{n}'
             if inmediato:
                 db.descartar_novedades_anteriores(u['correo'],n,ident)
                 st.session_state['trab_flash']='Novedad y avance guardados.'
@@ -436,9 +454,9 @@ def _pruebas_visibles(u,n,d):
         paso=(d.get('dialogo_prueba') or {}).get('paso')
         if paso:
             with st.chat_message('assistant'):st.write(PREGUNTAS.get(paso,'Cuéntame cómo resultó la prueba.'))
-        elif d['prueba'] not in ('Aprobada','No requerida'):st.write('El trabajo terminó. Registra el resultado de las pruebas para preparar la partida.')
+        elif d['prueba'] not in ('Aprobada','No requerida'):st.write('¿Se realizaron las pruebas de funcionamiento?' if d['prueba']!='Fallida' else '¿Se repitieron las pruebas de funcionamiento?')
         acciones=[]
-        if not paso and d['prueba'] not in ('Aprobada','No requerida'):acciones=[('Se realizaron las pruebas','iniciar_prueba')]
+        if paso in (None,'','realizacion') and d['prueba'] not in ('Aprobada','No requerida'):acciones=[('Sí, se realizaron','iniciar_prueba'),('Aún no','posponer_prueba')]
         elif paso=='observaciones':acciones=[('Funcionamiento normal, sin observaciones','sin_observaciones'),('Hubo observaciones','con_observaciones')]
         elif paso=='impacto':acciones=[('Sí, impide la partida','impide_partida'),('No, funcionamiento normal','no_impide_partida')]
         for etiqueta,accion in acciones:
@@ -446,7 +464,12 @@ def _pruebas_visibles(u,n,d):
                 try:
                     db.registrar_prueba(u['correo'],n,d['id'],d['version'],accion)
                     db.descartar_novedades_anteriores(u['correo'],n,d['id'])
-                    st.session_state['trab_flash']='Resultado de prueba registrado.';_refrescar_chat()
+                    if accion=='posponer_prueba':
+                        st.session_state.pop(f'trab_prueba_inmediata_{n}',None)
+                        st.session_state['trab_limpiar_seleccion']=f'trab_chat_activo_{n}'
+                        st.session_state['trab_flash']='Trabajo terminado. Las pruebas quedan pendientes; puedes continuar con otra actividad.'
+                    else:st.session_state['trab_flash']='Resultado de prueba registrado.'
+                    _refrescar_chat()
                 except ValueError as exc:st.error(str(exc))
         if d.get('detalle_prueba'):st.caption(d['detalle_prueba'])
 
@@ -509,6 +532,8 @@ def _reportes(u,p):
 
 
 def _limpiar_formularios():
+    seleccion=st.session_state.pop('trab_limpiar_seleccion',None)
+    if seleccion:st.session_state.pop(seleccion,None)
     limpiar=st.session_state.pop('trab_limpiar_form',None)
     if limpiar:
         for k in list(st.session_state):
