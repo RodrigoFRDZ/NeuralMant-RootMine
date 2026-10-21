@@ -1,5 +1,7 @@
 import os
 import re
+import time
+import random
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TypeVar
@@ -131,25 +133,45 @@ def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str
     if rapido:opciones_cliente["http_options"]=types.HttpOptions(timeout=20000)
     client = genai.Client(**opciones_cliente)
     operacion = getattr(esquema, "__name__", "GeneracionIA")
-    try:
-        respuesta = client.models.generate_content(
-            model=modelo,
-            contents=contenido,
-            config=types.GenerateContentConfig(
-                system_instruction=sistema,
-                response_mime_type="application/json",
-                response_schema=esquema,
-                temperature=0.15,
-                max_output_tokens=2048 if rapido else 8192,
-            ),
-        )
-        registrar_uso_ia(modelo, operacion, "ok", _usuario_email_actual())
-    except Exception as error:
-        if _es_error_cuota(error):
-            registrar_uso_ia(modelo, operacion, "cuota", _usuario_email_actual())
-            raise GearBotTemporalmenteNoDisponible(_mensaje_cuota(error)) from None
-        registrar_uso_ia(modelo, operacion, "error", _usuario_email_actual())
-        raise
+    modelos = [modelo]
+    respaldo = _secret("GEMINI_FALLBACK_MODEL") or os.getenv("GEMINI_FALLBACK_MODEL", "")
+    if respaldo.strip() and respaldo.strip() != modelo:
+        modelos.append(respaldo.strip())
+    respuesta = None
+    for indice_modelo, modelo_actual in enumerate(modelos):
+        for intento in range(3):
+            try:
+                respuesta = client.models.generate_content(
+                    model=modelo_actual,
+                    contents=contenido,
+                    config=types.GenerateContentConfig(
+                        system_instruction=sistema,
+                        response_mime_type="application/json",
+                        response_schema=esquema,
+                        temperature=0.15,
+                        max_output_tokens=2048 if rapido else 8192,
+                    ),
+                )
+                registrar_uso_ia(modelo_actual, operacion, "ok", _usuario_email_actual())
+                break
+            except Exception as error:
+                texto_error = str(error).lower()
+                temporal = any(x in texto_error for x in (
+                    "503", "unavailable", "high demand", "overloaded", "429", "resource_exhausted", "rate limit"
+                ))
+                registrar_uso_ia(modelo_actual, operacion, "temporal" if temporal else "error", _usuario_email_actual())
+                if not temporal:
+                    raise
+                if intento < 2:
+                    time.sleep(min(8, 2 ** intento * 2) + random.uniform(0, 0.5))
+                elif indice_modelo == len(modelos) - 1:
+                    raise GearBotTemporalmenteNoDisponible(
+                        "GearBot no pudo conectarse con Gemini después de varios intentos. "
+                        "Tu relato permanece disponible; intenta nuevamente en unos minutos. "
+                        "Si continúa, solicita revisar el modelo y los registros de IA."
+                    ) from None
+        if respuesta is not None:
+            break
     parsed = getattr(respuesta, "parsed", None)
     if parsed is not None:
         return parsed if isinstance(parsed, esquema) else esquema.model_validate(parsed)

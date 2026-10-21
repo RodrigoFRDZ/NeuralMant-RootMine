@@ -490,6 +490,14 @@ def main() -> None:
 
     restaurar_contexto_navegacion()
     abrir_material_desde_url()
+    # Acceso a cerrar sesión aunque el menú lateral esté oculto.
+    with st.container():
+        col_espacio, col_salir = st.columns([6, 1])
+        with col_salir:
+            if st.button("🚪 Salir", key="logout_visible", use_container_width=True,
+                         help="Cerrar sesión de NeuralMant"):
+                cerrar_sesion_rootmine()
+                st.rerun()
     pagina = mostrar_menu()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
