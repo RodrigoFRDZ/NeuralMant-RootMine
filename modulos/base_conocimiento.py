@@ -19,9 +19,6 @@ def mostrar_base_conocimiento() -> None:
         <p>Consulta aprendizajes, causas raíz y acciones provenientes de análisis anteriores.</p></div>''',
         unsafe_allow_html=True,
     )
-    from modulos.gestion_adf_resumen import mostrar_resumen
-    with st.expander("📊 Resumen de estados y agrupación de fallas"):
-        mostrar_resumen()
     if not registros:
         st.info("Todavía no existen análisis guardados para consultar.")
         return
@@ -42,29 +39,6 @@ def mostrar_base_conocimiento() -> None:
             coincidencias.append(adf)
 
     st.caption(f"{len(coincidencias)} análisis encontrados")
-    # Las correcciones se mantienen solo durante la sesión; no alteran ADF históricos.
-    reemplazos = st.session_state.setdefault("conocimiento_grupos_revisados", {})
-    with st.expander("🧩 Modos de falla agrupados · revisar y desplegar", expanded=True):
-        st.caption("Agrupación automática conservadora. Las categorías son sugerencias, no diagnósticos IA. No modifica los ADF originales.")
-        grupos = agrupar_registros(coincidencias, reemplazos)
-        st.metric("Grupos visibles", len(grupos))
-        for grupo, elementos in grupos.items():
-            with st.expander(f"{grupo} · {len(elementos)} ADF"):
-                for a, original in elementos:
-                    st.write(f"ADF #{a.id} · {a.equipo or 'Sin equipo'} · {original or 'Sin descripción'}")
-        originales = sorted({str(getattr(a, "efecto", "") or "").strip() for a in coincidencias if getattr(a, "efecto", "")})
-        if originales:
-            st.markdown("**Corregir agrupación (solo vista actual)**")
-            original_sel = st.selectbox("Descripción original", originales, key="conocimiento_original_grupo")
-            pred = reemplazos.get(normalizar(original_sel), sugerir(original_sel))
-            nuevo = st.text_input("Categoría genérica", value=pred, key="conocimiento_nuevo_grupo")
-            if st.button("Aplicar corrección", key="conocimiento_guardar_grupo"):
-                if nuevo.strip():
-                    reemplazos[normalizar(original_sel)] = nuevo.strip()[:120]
-                    st.rerun()
-            st.caption("La corrección no persiste al cerrar sesión. Se requiere aprobación y almacenamiento controlado para hacerla permanente.")
-    if coincidencias:
-        st.download_button("📥 Exportar resultados filtrados a Excel", _exportar_conocimiento(coincidencias, reemplazos), file_name="Conocimiento_RootMine.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     for adf in coincidencias:
         plan = _json(adf.plan_prevencion, [])
         with st.container(border=True):

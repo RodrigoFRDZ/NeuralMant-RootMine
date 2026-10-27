@@ -357,4 +357,7 @@ def mostrar_indicadores() -> None:
             planes_equipo[eq] += 1
         _grafico_barras_horizontal(dict(planes_equipo), "Equipos con más planes de acción", max_items=8)
 
-    _panel_modos_falla(datos)
+    from modulos.dashboard_ejecutivo import mostrar_dashboard_ejecutivo
+    mostrar_dashboard_ejecutivo(datos)
+    with st.expander("Detalle histórico de modos de falla (vista anterior)"):
+        _panel_modos_falla(datos)
