@@ -1,3 +1,5 @@
+from modulos.mi_gestion import mostrar_mi_gestion
+from database.mi_gestion import autorizado as gestion_autorizado
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -433,6 +435,8 @@ def _opciones_navegacion(usuario, pagina):
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
         opciones.append("✅ Aprobaciones de materiales")
+    if gestion_autorizado(usuario):
+        opciones.append("🔒 Mi Gestión")
     if usuario.get("es_admin"):
         opciones.append("👥 Administración de cuentas")
     opciones.append("ℹ️ Acerca de")
@@ -519,6 +523,7 @@ def main() -> None:
         st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
         mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
+    elif pagina == "🔒 Mi Gestión": mostrar_mi_gestion()
     elif pagina == "👥 Administración de cuentas": mostrar_administracion()
     else: mostrar_acerca()
 

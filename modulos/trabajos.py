@@ -328,7 +328,6 @@ def _chat(u,n):
             st.write(h.get('mensaje') or f"{h['estado']} · Prueba: {h['prueba']}")
     if d['estado']!='Terminado':
         with st.chat_message('assistant'):st.write(pregunta_bitacora(d))
-    _pruebas_visibles(u,n,d)
     pendiente=st.session_state.get(pendiente_key)
     if pendiente:
         st.warning('Hay una novedad que no se pudo guardar. Conserva su trabajo original; no se enviará a otra área.')
@@ -339,7 +338,8 @@ def _chat(u,n):
             st.session_state.pop(pendiente_key,None);_refrescar_chat()
     with st.expander('Adjuntar fotos (opcional)'):
         adjuntos=st.file_uploader('Máximo 3 JPG/PNG de hasta 2 MB',type=['jpg','jpeg','png'],accept_multiple_files=True,key=f'trab_chat_adjuntos_{n}_{ident}')
-        if adjuntos:st.caption(f'{len(adjuntos)} foto(s) seleccionadas. Se guardan al enviar el comentario.')
+        if adjuntos:st.caption(f'{len(adjuntos)} foto(s) seleccionadas. Se guardan al enviar el comentario, registrar las pruebas o cambiar el estado del trabajo.')
+    _pruebas_visibles(u,n,d,adjuntos or [])
     escrito=st.chat_input('Escribe tu observación o responde a GearBot…',key=f'trab_chat_entrada_{n}_{ident}',disabled=bool(pendiente))
     if escrito:
         if len(escrito)>10000 or len(adjuntos or [])>3 or any(f.size>2*1024*1024 for f in adjuntos or []):
@@ -387,8 +387,9 @@ def _chat(u,n):
             cambio['avance']=None if accion=='Iniciado' else 100
             cambio['origen_avance']='estado_supervisor'
             try:
-                db.actualizar(u['correo'],n,ident,d['version'],cambio,mensaje=accion+' registrado por el responsable de turno.')
-                st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=f'trab_form_{ident}_';_refrescar_chat()
+                db.actualizar(u['correo'],n,ident,d['version'],cambio,[(f.name,f.getvalue()) for f in adjuntos or []],mensaje=accion+' registrado por el responsable de turno.')
+                st.session_state['trab_flash']=accion+' registrado.'+(f' {len(adjuntos)} foto(s) guardadas correctamente.' if adjuntos else '')
+                st.session_state.pop(f'trab_revision_{n}_{ident}',None);st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{ident}',f'trab_form_{ident}_'];_refrescar_chat()
             except ValueError as exc:st.error(str(exc))
     with st.expander('Ver bitácora completa o corregir un registro'):
         if st.toggle('Abrir herramientas de corrección',key=f'trab_chat_detalle_{n}_{ident}'):
@@ -477,7 +478,7 @@ def _chat_area(u,n,area):
                     except ValueError as exc:st.error(str(exc))
 
 
-def _pruebas_visibles(u,n,d):
+def _pruebas_visibles(u,n,d,adjuntos=()):
     from motores.pruebas_trabajos import PREGUNTAS
     if d['estado']!='Terminado':return
     with st.container(border=True):
@@ -493,13 +494,15 @@ def _pruebas_visibles(u,n,d):
         for etiqueta,accion in acciones:
             if st.button(etiqueta,key=f'trab_prueba_{n}_{d["id"]}_{accion}',type='primary'):
                 try:
-                    db.registrar_prueba(u['correo'],n,d['id'],d['version'],accion)
+                    db.registrar_prueba(u['correo'],n,d['id'],d['version'],accion,**({'fotos':[(f.name,f.getvalue()) for f in adjuntos]} if adjuntos else {}))
                     db.descartar_novedades_anteriores(u['correo'],n,d['id'])
                     if accion=='posponer_prueba':
                         st.session_state.pop(f'trab_prueba_inmediata_{n}',None)
                         st.session_state['trab_limpiar_seleccion']=f'trab_chat_activo_{n}'
                         st.session_state['trab_flash']='Trabajo terminado. Las pruebas quedan pendientes; puedes continuar con otra actividad.'
                     else:st.session_state['trab_flash']='Resultado de prueba registrado.'
+                    if adjuntos:st.session_state['trab_flash']+=f' {len(adjuntos)} foto(s) guardadas correctamente.'
+                    st.session_state['trab_limpiar_form']=[f'trab_chat_adjuntos_{n}_{d["id"]}',f'trab_form_{d["id"]}_']
                     _refrescar_chat()
                 except ValueError as exc:st.error(str(exc))
         if d.get('detalle_prueba'):st.caption(d['detalle_prueba'])
@@ -547,6 +550,8 @@ def _reportes(u,p):
             with st.spinner('GearBot analiza los registros y prepara la conclusión. Las bitácoras extensas se revisan en partes…'):
                 nuevo=mejorar_resumen(filas,{k:st.session_state[pref+k] for k in ('comentario','sugerencias')},novedades)
             st.session_state[pref+'comentario']=nuevo['comentario'];st.session_state[pref+'sugerencias']=nuevo['sugerencias'];st.session_state[pref+'fuente']=firma;st.session_state[pref+'base']=base
+            st.session_state[pref+'focos']=nuevo.get('focos',[])
+            st.session_state[pref+'focos_fuente']=firma
             st.session_state.pop(pref+'error_ia',None)
             st.success('Redacción ajustada. Revisa el resumen antes de descargar.')
         except Exception as exc:
@@ -562,6 +567,8 @@ def _reportes(u,p):
     comentario=st.text_area('Resumen ejecutivo',key=pref+'comentario',height=240)
     sugerencias=st.text_area('Acciones y focos de seguimiento',key=pref+'sugerencias',height=120)
     actual=dict(titulo=p['titulo'],centro=p['centro'],fecha=fecha,turno=turno,comentario=comentario,sugerencias=sugerencias,autor=u['correo'],nombre=u['nombre'],generado=datetime.utcnow().isoformat(),trabajos=filas,lineas=db.lineas(filas),novedades_area=novedades,sugerencias_automaticas=sugerencias==base['sugerencias'])
+    if st.session_state.get(pref+'focos_fuente')==firma:actual['focos_redactados']=st.session_state.get(pref+'focos',[])
+    st.caption('GearBot también revisa la ortografía y sintetiza las prioridades al analizar el informe. La bitácora conserva el texto original.')
     pdf=generar_pdf(u['correo'],n,actual,True)
     def registrar_descarga():
         if db.puede_chat(u) and (comentario!=base['comentario'] or sugerencias!=base['sugerencias']):
