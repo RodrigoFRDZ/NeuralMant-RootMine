@@ -11,6 +11,7 @@ from database.metricas_sistema import mb
 from modulos.cache_lecturas import dashboard_cache, uso_ia_cache, almacenamiento_cache
 from ia.cliente import limites_configurados, obtener_configuracion
 from modulos.nuevo_adf import cargar_adf_para_correccion, cargar_borrador_para_continuar
+from database.mi_gestion import autorizado as gestion_autorizado
 
 
 
@@ -37,11 +38,11 @@ def _causa_resumen(registro) -> str:
 
 def _modulos_inicio(usuario):
     st.markdown("""<style>
-    .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales, .st-key-suite_modulo_trabajos {
+    .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales, .st-key-suite_modulo_trabajos, .st-key-suite_modulo_mi_gestion {
         background:linear-gradient(145deg,var(--rm-panel2,#22272d),var(--rm-panel,#1c2025))!important;
         border:1px solid var(--rm-line,#343a41)!important;border-radius:16px;
         color:var(--rm-text,#f5f7fa);transition:border-color .18s ease;}
-    .st-key-suite_modulo_rootmine:hover, .st-key-suite_modulo_materiales:hover, .st-key-suite_modulo_trabajos:hover {
+    .st-key-suite_modulo_rootmine:hover, .st-key-suite_modulo_materiales:hover, .st-key-suite_modulo_trabajos:hover, .st-key-suite_modulo_mi_gestion:hover {
         border-color:var(--rm-orange,#ff7a00)!important;}
     .suite-module {padding:12px 10px 4px;min-height:180px;box-sizing:border-box;}
     .suite-module .module-category {color:var(--rm-orange2,#ff9a3d);font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
@@ -54,7 +55,10 @@ def _modulos_inicio(usuario):
         ("Gestión de Materiales", "MATERIALES Y CONTINUIDAD", "Solicita stock de seguridad, incorpora materiales al MRP y revisa su criticidad y aprobación.", "📦 Gestión de Materiales", "materiales"),
         ("Seguimiento de trabajos", "AVANCE Y ENTREGA DE TURNO", "Consulta la programación del fin de semana, pendientes, fotos y pruebas para la partida.", "🛠️ Seguimiento de trabajos", "trabajos"),
     ]
-    for col, (titulo, categoria, descripcion, pagina, clave) in zip(st.columns(3), modulos):
+    if gestion_autorizado(usuario):
+        modulos.append(("Mi Gestión", "ESPACIO PERSONAL PRIVADO", "Organiza objetivos, compromisos, avances y resultados de tus mejoras.", "🔒 Mi Gestión", "mi_gestion"))
+    columnas = st.columns(len(modulos))
+    for col, (titulo, categoria, descripcion, pagina, clave) in zip(columnas, modulos):
         with col, st.container(border=True, key="suite_modulo_"+clave):
             st.markdown(f'<div class="suite-module"><div class="module-category">{categoria}</div>'
                         f'<h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
@@ -201,6 +205,13 @@ def mostrar_rootmine() -> None:
                         else:
                             st.error("No fue posible abrir este ADF para corrección.")
 
+    if gestion_autorizado(usuario_actual):
+        with st.container(border=True):
+            st.markdown("#### 🔒 Mi Gestión · Acceso privado")
+            st.caption("Objetivos, compromisos, seguimiento y resultados de tus mejoras.")
+            if st.button("Abrir Mi Gestión →", key="dash_mi_gestion_rootmine", use_container_width=True):
+                st.session_state.pagina = "🔒 Mi Gestión"
+                st.rerun()
     st.markdown("### Accesos rápidos")
     a1, a2, a3, a4, a5 = st.columns(5)
     with a1:
