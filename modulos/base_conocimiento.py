@@ -1,6 +1,7 @@
 import json
 import streamlit as st
 from database.repositorio_adf import listar_adf
+from modulos.agrupacion_fallas import agrupar_registros, normalizar, sugerir
 
 
 def _json(texto: str, defecto):
@@ -41,8 +42,29 @@ def mostrar_base_conocimiento() -> None:
             coincidencias.append(adf)
 
     st.caption(f"{len(coincidencias)} análisis encontrados")
+    # Las correcciones se mantienen solo durante la sesión; no alteran ADF históricos.
+    reemplazos = st.session_state.setdefault("conocimiento_grupos_revisados", {})
+    with st.expander("🧩 Modos de falla agrupados · revisar y desplegar", expanded=True):
+        st.caption("Agrupación automática conservadora. Las categorías son sugerencias, no diagnósticos IA. No modifica los ADF originales.")
+        grupos = agrupar_registros(coincidencias, reemplazos)
+        st.metric("Grupos visibles", len(grupos))
+        for grupo, elementos in grupos.items():
+            with st.expander(f"{grupo} · {len(elementos)} ADF"):
+                for a, original in elementos:
+                    st.write(f"ADF #{a.id} · {a.equipo or 'Sin equipo'} · {original or 'Sin descripción'}")
+        originales = sorted({str(getattr(a, "efecto", "") or "").strip() for a in coincidencias if getattr(a, "efecto", "")})
+        if originales:
+            st.markdown("**Corregir agrupación (solo vista actual)**")
+            original_sel = st.selectbox("Descripción original", originales, key="conocimiento_original_grupo")
+            pred = reemplazos.get(normalizar(original_sel), sugerir(original_sel))
+            nuevo = st.text_input("Categoría genérica", value=pred, key="conocimiento_nuevo_grupo")
+            if st.button("Aplicar corrección", key="conocimiento_guardar_grupo"):
+                if nuevo.strip():
+                    reemplazos[normalizar(original_sel)] = nuevo.strip()[:120]
+                    st.rerun()
+            st.caption("La corrección no persiste al cerrar sesión. Se requiere aprobación y almacenamiento controlado para hacerla permanente.")
     if coincidencias:
-        st.download_button("📥 Exportar resultados filtrados a Excel", _exportar_conocimiento(coincidencias), file_name="Conocimiento_RootMine.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("📥 Exportar resultados filtrados a Excel", _exportar_conocimiento(coincidencias, reemplazos), file_name="Conocimiento_RootMine.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     for adf in coincidencias:
         plan = _json(adf.plan_prevencion, [])
         with st.container(border=True):
@@ -66,22 +88,29 @@ def mostrar_base_conocimiento() -> None:
                             st.write(f"• {accion}")
 
 
-def _exportar_conocimiento(registros):
+def _exportar_conocimiento(registros, reemplazos=None):
     """Exportación estructurada sin modificar ADF originales."""
     import io
     import pandas as pd
     filas=[]
     acciones=[]
+    reemplazos = reemplazos or {}
+    grupos_export=[]
     for a in registros:
+        original = str(getattr(a, "efecto", "") or "")
+        grupo = reemplazos.get(normalizar(original)) or sugerir(original)
+        grupos_export.append({"ADF": a.id, "Grupo genérico": grupo, "Modo de falla original": original,
+                              "Equipo": a.equipo, "Área": a.area})
         filas.append({'ADF':a.id,'Centro':getattr(a,'centro',''),'Planta':getattr(a,'planta',''),
                       'Área':a.area,'Equipo':a.equipo,'N° equipo':getattr(a,'numero_equipo',''),
-                      'Estado':getattr(a,'estado',''),'Fenómeno':a.efecto,'Relato':a.relato_original,
+                      'Estado':getattr(a,'estado',''),'Grupo genérico':grupo,'Fenómeno':a.efecto,'Relato':a.relato_original,
                       'Conclusión':a.conclusion,'Fecha actualización':str(a.fecha_actualizacion)})
         for p in _json(a.plan_prevencion,[]):
             acciones.append({'ADF':a.id,'Equipo':a.equipo,'Acción':p.get('accion','') if isinstance(p,dict) else str(p),
                              'Detalle':json.dumps(p,ensure_ascii=False) if isinstance(p,dict) else ''})
     b=io.BytesIO()
     with pd.ExcelWriter(b,engine='openpyxl') as w:
+        pd.DataFrame(grupos_export).to_excel(w,sheet_name='Modos agrupados',index=False)
         pd.DataFrame(filas).to_excel(w,sheet_name='ADF',index=False)
         pd.DataFrame(acciones,columns=['ADF','Equipo','Acción','Detalle']).to_excel(w,sheet_name='Acciones',index=False)
     return b.getvalue()
