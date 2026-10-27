@@ -22,6 +22,7 @@ def clasificar(texto,categoria='Automática',impacto='Por evaluar'):
         impacto=impacto,clasificacion='Orientativa por texto' if categoria=='Automática' else 'Informada por supervisor')
 
 def focos(filas,novedades=()):
+    from motores.redaccion_informe import consolidar,detalle_seguimiento
     partida=[];semana=[];retrasos=[]
     for d in filas:
         ref=f"{d['descripcion']} · {d['area']}"
@@ -35,16 +36,19 @@ def focos(filas,novedades=()):
         antecedentes_texto=' | '.join(dict.fromkeys(t for t in antecedentes if t not in actuales))
         actual_senales=senales(actuales+' '+antecedentes_texto)
         if set(actual_senales)&{'Seguridad','Calidad'}:razones.append('Antecedente de seguridad/calidad: '+(actuales+' '+antecedentes_texto)+'. Verificar vigencia y tratamiento.')
-        if razones:partida.append(dict(referencia=ref,detalle=' '.join(razones),accion='Propuesta: verificar en terreno y definir la condición de entrega antes de la partida.'))
-        if 'Operación' in actual_senales:semana.append(dict(referencia=ref,detalle=(actuales+' '+antecedentes_texto),accion='Propuesta: evaluar la observación y acordar seguimiento durante la semana.'))
+        if razones:partida.append(dict(referencia=ref,detalle=' '.join(razones),accion='Verificar en terreno la condición de entrega.'))
+        if 'Operación' in actual_senales:semana.append(dict(referencia=ref,detalle=detalle_seguimiento(d),accion='Revisar la observación y registrar el seguimiento.'))
         mensajes=[h['mensaje'] for h in d.get('historial',[]) if h.get('mensaje') and not h.get('automatico')]
         tardias=[t for t in mensajes if 'Retraso' in senales(t)]
-        if tardias:retrasos.append(dict(referencia=ref,detalle='Retraso / entrega tardía informada: '+' | '.join(tardias),accion='Validar la hora real de entrega y su efecto en la partida. No se calcula una demora sin horario confirmado.'))
+        if tardias:retrasos.append(dict(referencia=ref,detalle=consolidar(tardias,d['descripcion']),accion='Confirmar la entrega real y su efecto en la partida.'))
     for a in novedades:
         if a.get('estado')!='Abierto' or a.get('resuelve'):continue
-        f=dict(referencia=a['categoria']+' · '+a['area'],detalle=a['categoria']+': '+a['mensaje'],accion='Propuesta: coordinar revisión del hallazgo y registrar el tratamiento o resolución.')
+        f=dict(referencia=a['categoria']+' · '+a['area'],detalle=a['categoria']+': '+a['mensaje'],accion='Revisar el hallazgo y registrar su resolución.')
         texto=normalizar(a['mensaje'])
         if a['categoria'] in ('Seguridad','Calidad','Retraso','Trabajo no informado','Operación') or set(senales(texto))&{'Seguridad','Calidad'} or re.search(r'partida|arranque|puesta en marcha',texto):partida.append(f)
         if a['categoria']=='Operación' or 'Operación' in senales(texto) or re.search(r'durante la semana|operacion semanal',texto):semana.append(f)
         if a['categoria']=='Retraso':retrasos.append(f)
+    for grupo in (partida,semana,retrasos):
+        for f in grupo:
+            f['detalle']=consolidar([f['detalle']],f['referencia'])
     return dict(partida=partida,semana=semana,retrasos=retrasos)
