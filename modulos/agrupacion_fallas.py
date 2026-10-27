@@ -5,18 +5,31 @@ from collections import defaultdict
 
 # Categorías técnicas basadas en objeto + mecanismo; no mezclar mecanismos diferentes.
 REGLAS = [
-    ("Correa · rotura", ("correa", "banda"), ("rotur", "rota", "roto", "cortad", "partid", "quebrad")),
-    ("Correa · deslizamiento", ("correa", "banda"), ("patin", "desliz")),
-    ("Correa · desgaste", ("correa", "banda"), ("desgast", "deterior")),
-    ("Rodamiento · falla", ("rodamiento", "cojinete", "ruleman"), ("fall", "averi", "danad", "gripad", "trabado")),
-    ("Rodamiento · desgaste", ("rodamiento", "cojinete", "ruleman"), ("desgast", "deterior")),
-    ("Rodamiento · temperatura", ("rodamiento", "cojinete", "ruleman"), ("calent", "temperatura", "sobrecalent")),
-    ("Sello · fuga", ("sello", "reten", "empaquetadura"), ("fuga", "filtr", "perdid", "escape")),
-    ("Tubería · fuga", ("tuberia", "caneria", "ducto"), ("fuga", "filtr", "perdid", "escape")),
-    ("Motor · falla eléctrica", ("motor",), ("cortocircuit", "bobinad", "aislamient", "sobrecorriente")),
-    ("Motor · temperatura", ("motor",), ("calent", "temperatura", "sobrecalent")),
-    ("Equipo · vibración", ("vibracion", "vibra", "desbalance"), ("vibracion", "vibra", "desbalance")),
-    ("Equipo · lubricación", ("lubric", "grasa", "engrase"), ("lubric", "grasa", "engrase")),
+    ("Correas · rotura", ("correa", "banda"), ("rotur", "rota", "roto", "cortad", "partid", "quebrad")),
+    ("Correas · deslizamiento", ("correa", "banda"), ("patin", "desliz")),
+    ("Correas · desgaste", ("correa", "banda"), ("desgast", "deterior")),
+    ("Rodamientos · daño", ("rodamiento", "cojinete", "ruleman"), ("fall", "averi", "danad", "gripad", "trabado", "fatiga")),
+    ("Rodamientos · desgaste", ("rodamiento", "cojinete", "ruleman"), ("desgast", "deterior")),
+    ("Rodamientos · temperatura", ("rodamiento", "cojinete", "ruleman"), ("calent", "temperatura", "sobrecalent")),
+    ("Sellos · fugas", ("sello", "reten", "empaquetadura"), ("fuga", "filtr", "perdid", "escape")),
+    ("Tuberías · fugas", ("tuberia", "caneria", "ducto"), ("fuga", "filtr", "perdid", "escape")),
+    ("Motores · falla eléctrica", ("motor",), ("cortocircuit", "bobinad", "aislamient", "sobrecorriente")),
+    ("Motores · temperatura", ("motor",), ("calent", "temperatura", "sobrecalent")),
+]
+
+# Clasificación por mecanismo principal, aplicable aunque el texto no nombre
+# explícitamente el componente. Prioridad deliberada para evitar categorías duplicadas.
+MECANISMOS = [
+    ("Fallas eléctricas", ("cortocircuit", "corto circuito", "electrica", "electrico", "bobinad", "sobrecorriente", "aislamiento", "etapa de potencia", "fusible")),
+    ("Fallas de comunicación y control", ("comunicacion", "following error", "seguimiento", "control", "sensor", "encoder", "plc", "senal")),
+    ("Fugas y filtraciones", ("fuga", "filtracion", "escape de", "perdida de fluido")),
+    ("Desgaste y corrosión", ("corrosion", "desgaste", "abrasiv", "erosion", "deterioro")),
+    ("Desalineación e interferencias", ("desaline", "interferencia", "atascamiento", "jamming", "cuerpo extrano", "pitch mismatch")),
+    ("Vibración y desbalance", ("vibracion", "desbalance", "vibra")),
+    ("Fatiga y rotura mecánica", ("fatiga", "fractura", "rotura", "quiebre", "deformacion plastica")),
+    ("Sobrecalentamiento", ("sobrecalent", "temperatura", "termica", "calentamiento")),
+    ("Sobrecarga mecánica", ("sobrecarga", "sobre esfuerzo", "sobreesfuerzo")),
+    ("Lubricación", ("lubric", "engrase", "grasa", "falta de aceite")),
 ]
 
 def normalizar(valor):
@@ -27,15 +40,16 @@ def normalizar(valor):
 def sugerir(texto):
     limpio = normalizar(texto)
     if not limpio:
-        return "Sin descripción"
+        return "Sin agrupar"
     candidatos = [nombre for nombre, objetos, mecanismos in REGLAS
                   if any(o in limpio for o in objetos) and any(m in limpio for m in mecanismos)]
     if len(candidatos) == 1:
         return candidatos[0]
-    if len(candidatos) > 1:
-        return "Revisión técnica requerida"
-    # Agrupar variantes estrictamente iguales tras normalizar, no por similitud vaga.
-    return "Sin clasificar · " + limpio[:90]
+    # Clasificar por mecanismo predominante. No constituye diagnóstico técnico.
+    for nombre, palabras in MECANISMOS:
+        if any(p in limpio for p in palabras):
+            return nombre
+    return "Sin agrupar"
 
 def agrupar_registros(registros, reemplazos=None):
     grupos = defaultdict(list)

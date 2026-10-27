@@ -359,5 +359,3 @@ def mostrar_indicadores() -> None:
 
     from modulos.dashboard_ejecutivo import mostrar_dashboard_ejecutivo
     mostrar_dashboard_ejecutivo(datos)
-    with st.expander("Detalle histórico de modos de falla (vista anterior)"):
-        _panel_modos_falla(datos)

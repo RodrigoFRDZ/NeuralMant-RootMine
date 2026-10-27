@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime
 import pandas as pd
 import streamlit as st
+import altair as alt
 from modulos.agrupacion_fallas import sugerir, normalizar, agrupar_registros
 
 
@@ -78,8 +79,24 @@ def _excel(adf,planes):
     return b.getvalue()
 
 
+
+def _grafico(serie, titulo, horizontal=False):
+    """Gráfico integrado al tema oscuro, sin fondo blanco."""
+    if serie.empty:
+        st.info('Sin datos para este indicador.')
+        return
+    datos = serie.rename_axis('Categoría').reset_index(name='Cantidad')
+    base = alt.Chart(datos).mark_bar(color='#36A3FF', cornerRadiusEnd=4)
+    eje = alt.Axis(labelColor='#DCE8F4', titleColor='#DCE8F4', gridColor='#314155', domain=False, tickColor='#314155')
+    if horizontal:
+        chart = base.encode(y=alt.Y('Categoría:N', sort='-x', axis=eje, title=None), x=alt.X('Cantidad:Q', axis=eje, title=None), tooltip=['Categoría:N','Cantidad:Q'])
+    else:
+        chart = base.encode(x=alt.X('Categoría:N', sort='-y', axis=alt.Axis(labelColor='#DCE8F4', titleColor='#DCE8F4', labelAngle=-35, domain=False), title=None), y=alt.Y('Cantidad:Q', axis=eje, title=None), tooltip=['Categoría:N','Cantidad:Q'])
+    chart = chart.properties(height=max(270, min(480, 24*len(datos))) if horizontal else 300, background='transparent').configure_view(strokeOpacity=0).configure(background='transparent')
+    st.altair_chart(chart, use_container_width=True, theme=None)
+
 def mostrar_dashboard_ejecutivo(registros):
-    st.markdown('## Gestión de ADF y modos de falla')
+    st.markdown('## Panel ejecutivo de mantenimiento')
     st.caption('Indicadores basados en los ADF registrados. Los días desde actualización no equivalen al tiempo real de aprobación.')
     correcciones=st.session_state.setdefault('conocimiento_grupos_revisados',{})
     adf,planes=_tablas(registros,correcciones)
@@ -97,15 +114,15 @@ def mostrar_dashboard_ejecutivo(registros):
     c[3].metric('Planes atrasados',int(planes['Estado'].eq('Atrasado').sum()) if len(planes) else 0)
     t1,t2,t3,t4=st.tabs(['Estados y pendientes','Modos de falla','Equipos y áreas','Planes y exportación'])
     with t1:
-        st.bar_chart(estados)
+        _grafico(estados, "ADF por estado")
         pendientes=adf[adf['Estado'].isin(['Pendiente Supervisor','Pendiente Jefe','Requiere corrección'])]
         st.markdown('**ADF pendientes y antigüedad**')
         st.dataframe(pendientes[['ADF','Área','Equipo','Estado','Creado por','Días desde actualización']],hide_index=True,use_container_width=True)
         st.caption('La antigüedad es desde la última actualización, no desde la asignación al liberador.')
     with t2:
         grupos=agrupar_registros(registros,correcciones)
-        st.bar_chart(adf['Grupo sugerido'].value_counts().head(15))
-        st.caption('“Sin clasificar” conserva descripciones distintas hasta que sean revisadas; no representa un único mecanismo de falla.')
+        _grafico(adf['Grupo sugerido'].value_counts().head(15), 'Modos de falla', horizontal=True)
+        st.caption('Sin agrupar reúne todos los fenómenos sin coincidencia de palabras clave. Las categorías son orientativas y requieren validación técnica.')
         for grupo,items in grupos.items():
             with st.expander(f'{grupo} · {len(items)} ADF'):
                 for a,original in items:
@@ -120,14 +137,14 @@ def mostrar_dashboard_ejecutivo(registros):
                 st.rerun()
     with t3:
         st.markdown('**Equipos con más ADF**')
-        st.bar_chart(adf['Equipo'].value_counts().head(12))
+        _grafico(adf['Equipo'].value_counts().head(12), 'Equipos', horizontal=True)
         st.markdown('**ADF por área**')
-        st.bar_chart(adf['Área'].value_counts())
+        _grafico(adf['Área'].value_counts(), 'Áreas')
         st.markdown('**Detalle de modos de falla**')
         st.dataframe(adf[['ADF','Área','Equipo','Estado','Modo de falla original','Grupo sugerido','Tiempo perdido (h)']],hide_index=True,use_container_width=True)
     with t4:
         if not planes.empty:
-            st.bar_chart(planes['Estado'].value_counts())
+            _grafico(planes['Estado'].value_counts(), 'Planes de acción')
             st.dataframe(planes,hide_index=True,use_container_width=True)
         else: st.info('No hay planes de acción para el filtro seleccionado.')
     st.download_button('📥 Descargar informe ejecutivo Excel',data=_excel(adf,planes),
