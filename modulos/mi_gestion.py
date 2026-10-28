@@ -1,11 +1,59 @@
 """Tablero personal: objetivos, actividades y recomendaciones revisables."""
 import io
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 from database import mi_gestion as db
 from database.repositorio_adf import listar_adf
 
 ESTADOS=['Pendiente','En ejecución','Finalizada','Postergada','Descartada']
+AVANCE_INICIAL={'Pendiente':0,'En ejecución':10,'Finalizada':100,'Postergada':0,'Descartada':0}
+
+def _dias(fecha):
+    try:
+        return (date.fromisoformat(str(fecha)[:10])-date.today()).days
+    except (ValueError, TypeError):
+        return None
+
+def _avance_estado(estado, anterior=0):
+    if estado == 'Finalizada': return 100
+    if estado in ('Pendiente','Descartada'): return 0
+    if estado == 'En ejecución':
+        return max(10, min(99, int(anterior or 0))) if int(anterior or 0)>0 else 10
+    return max(0, min(99, int(anterior or 0)))
+
+def _panel(registros):
+    activos=[r for r in registros if r['tipo'] in ('tarea','compromiso') and r['estado'] not in ('Finalizada','Descartada')]
+    vencidas=[r for r in activos if _dias(r.get('fecha_limite')) is not None and _dias(r.get('fecha_limite'))<0]
+    proximas=[r for r in activos if _dias(r.get('fecha_limite')) is not None and 0<=_dias(r.get('fecha_limite'))<=7]
+    estancadas=[]
+    for r in activos:
+        try:
+            dias=(date.today()-date.fromisoformat(str(r.get('actualizado',''))[:10])).days
+            if dias>=15: estancadas.append(r)
+        except ValueError: pass
+    st.subheader('Panel de control de compromisos')
+    a,b,c,d=st.columns(4)
+    a.metric('Activos',len(activos));b.metric('Vencidos',len(vencidas));c.metric('Por vencer (7 días)',len(proximas));d.metric('Sin actualización (15 días)',len(estancadas))
+    filtro=st.radio('Prioridades', ['Todos','Vencidos','Por vencer','Sin actualización'],horizontal=True,key='gestion_prioridad')
+    candidatos={'Todos':activos,'Vencidos':vencidas,'Por vencer':proximas,'Sin actualización':estancadas}[filtro]
+    candidatos=sorted(candidatos,key=lambda r:(_dias(r.get('fecha_limite')) is None, _dias(r.get('fecha_limite')) if _dias(r.get('fecha_limite')) is not None else 999999))
+    if not candidatos: st.success('No hay compromisos en esta categoría.')
+    for r in candidatos:
+        dias=_dias(r.get('fecha_limite'))
+        alerta=(f'{abs(dias)} días de atraso' if dias is not None and dias<0 else f'Vence en {dias} días' if dias is not None and dias<=7 else 'En plazo' if dias is not None else 'Sin fecha')
+        with st.expander(f"{r['titulo']} · {alerta}"):
+            st.caption(f"Responsable: {r.get('responsable') or 'Sin asignar'} · Estado: {r['estado']} · Avance: {r.get('avance') or 0}%")
+            st.write(f"Última gestión: {r.get('ultima_gestion') or 'Sin registro'}")
+            with st.form(f"seguimiento_{r['id']}"):
+                nota=st.text_area('Registrar última gestión',value=r.get('ultima_gestion') or '')
+                if st.form_submit_button('Guardar seguimiento'):
+                    db.actualizar(st.session_state.get('usuario_actual') or {},r['id'],ultima_gestion=nota)
+                    st.rerun()
+    if activos:
+        df=pd.DataFrame([{**r,'dias_para_vencer':_dias(r.get('fecha_limite'))} for r in candidatos])
+        st.download_button('📥 Descargar prioridades en Excel',_excel(df),'Prioridades_Mi_Gestion.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',key='descargar_prioridades')
+
 
 def mostrar_mi_gestion():
     usuario=st.session_state.get('usuario_actual') or {}
@@ -23,7 +71,9 @@ def mostrar_mi_gestion():
     b.metric('Tareas pendientes',sum(r['estado'] not in ('Finalizada','Descartada') for r in tareas))
     c.metric('Tareas finalizadas',sum(r['estado']=='Finalizada' for r in tareas))
     d.metric('Objetivos finalizados',sum(r['estado']=='Finalizada' for r in objetivos))
-    tab1,tab2,tab3,tab4=st.tabs(['🎯 Objetivos y tareas','📌 Compromisos','✨ Recomendaciones','📈 Resultados y exportación'])
+    tab0,tab1,tab2,tab3,tab4=st.tabs(['📊 Resumen ejecutivo','🎯 Objetivos y tareas','📌 Compromisos','✨ Recomendaciones','📈 Resultados y exportación'])
+    with tab0:
+        _panel(registros)
     with tab1:
         with st.expander('➕ Crear objetivo de mejora'):
             with st.form('nuevo_objetivo'):
@@ -49,7 +99,7 @@ def mostrar_mi_gestion():
                     c1.caption(f"Finalidad: {t['finalidad'] or 'Sin definir'} · Responsable: {t['responsable'] or 'Sin asignar'} · Plazo: {t['fecha_limite'] or 'Sin definir'}")
                     nuevo=c2.selectbox('Estado',ESTADOS,index=ESTADOS.index(t['estado']) if t['estado'] in ESTADOS else 0,key=f"estado_{t['id']}")
                     if nuevo!=t['estado']:
-                        db.actualizar(usuario,t['id'],estado=nuevo,avance=100 if nuevo=='Finalizada' else 0 if nuevo=='Pendiente' else max(1,min(99,int(t.get('avance') or 1)))); st.rerun()
+                        db.actualizar(usuario,t['id'],estado=nuevo,avance=_avance_estado(nuevo,t.get('avance') or 0)); st.rerun()
                     if nuevo=='En ejecución':
                         porcentaje=c2.slider('Avance (%)',1,99,max(1,min(99,int(t.get('avance') or 1))),key=f"avance_{t['id']}")
                         if porcentaje != int(t.get('avance') or 0):
@@ -83,7 +133,7 @@ def mostrar_mi_gestion():
                 st.caption(f"Finalidad: {r['finalidad']} · Responsable: {r['responsable']} · Plazo: {r['fecha_limite']}")
                 estado=st.selectbox('Estado',ESTADOS,index=ESTADOS.index(r['estado']) if r['estado'] in ESTADOS else 0,key=f"comp_{r['id']}")
                 if estado!=r['estado']:
-                    db.actualizar(usuario,r['id'],estado=estado);st.rerun()
+                    db.actualizar(usuario,r['id'],estado=estado,avance=_avance_estado(estado,r.get('avance') or 0));st.rerun()
     with tab3:
         st.info('Las sugerencias requieren tu aprobación. No se crean tareas automáticamente ni se consume IA para generarlas.')
         existentes={r['origen'] for r in registros if r['tipo']=='recomendacion'}
@@ -122,6 +172,9 @@ def mostrar_mi_gestion():
 def _excel(df):
     b=io.BytesIO()
     with pd.ExcelWriter(b,engine='openpyxl') as writer:
+        if 'tipo' not in df.columns:
+            df.to_excel(writer,sheet_name='Prioridades',index=False)
+            return b.getvalue()
         for tipo,nombre in [('objetivo','Objetivos'),('tarea','Tareas'),('compromiso','Compromisos'),('recomendacion','Recomendaciones')]:
             df[df['tipo']==tipo].to_excel(writer,sheet_name=nombre,index=False)
     return b.getvalue()

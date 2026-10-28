@@ -44,6 +44,8 @@ def preparar():
         columnas = {r[1] if engine.dialect.name == 'sqlite' else r[0] for r in (con.execute(text('PRAGMA table_info(mi_gestion_item)')).fetchall() if engine.dialect.name == 'sqlite' else con.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='mi_gestion_item'")).fetchall())}
         if 'avance' not in columnas:
             con.execute(text('ALTER TABLE mi_gestion_item ADD COLUMN avance INTEGER NOT NULL DEFAULT 0'))
+        if 'ultima_gestion' not in columnas:
+            con.execute(text("ALTER TABLE mi_gestion_item ADD COLUMN ultima_gestion TEXT NOT NULL DEFAULT ''"))
         if engine.dialect.name == 'postgresql':
             con.execute(text('ALTER TABLE mi_gestion_item ENABLE ROW LEVEL SECURITY'))
 
@@ -54,7 +56,7 @@ def listar(usuario):
 
 def guardar(usuario, tipo, titulo, objetivo='', finalidad='', padre_id=None, **campos):
     if not autorizado(usuario): raise PermissionError('Acceso denegado')
-    permitidos = {'estado','responsable','fecha_limite','indicador','linea_base','meta','valor_actual','evidencia','origen','avance'}
+    permitidos = {'estado','responsable','fecha_limite','indicador','linea_base','meta','valor_actual','evidencia','origen','avance','ultima_gestion'}
     datos = {'propietario':OWNER,'tipo':tipo,'titulo':titulo,'objetivo':objetivo,'finalidad':finalidad,'padre_id':padre_id,'creado':datetime.now().isoformat(timespec='seconds'),'actualizado':datetime.now().isoformat(timespec='seconds')}
     datos.update({k:str(v) for k,v in campos.items() if k in permitidos})
     cols=', '.join(datos)
@@ -66,7 +68,7 @@ def guardar(usuario, tipo, titulo, objetivo='', finalidad='', padre_id=None, **c
 
 def actualizar(usuario, id, **campos):
     if not autorizado(usuario): raise PermissionError('Acceso denegado')
-    permitidos={'estado','finalidad','responsable','fecha_limite','evidencia','valor_actual','meta','linea_base','indicador','objetivo','titulo','avance'}
+    permitidos={'estado','finalidad','responsable','fecha_limite','evidencia','valor_actual','meta','linea_base','indicador','objetivo','titulo','avance','ultima_gestion'}
     if 'avance' in campos:
         campos['avance'] = max(0, min(100, int(campos['avance'])))
     datos={k:str(v) for k,v in campos.items() if k in permitidos}
