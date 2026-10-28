@@ -1,5 +1,6 @@
 """Mi Gestión: panel compacto, avances, evidencias y reportes sin duplicados."""
 import io
+from html import escape
 from datetime import date, datetime
 import pandas as pd
 import streamlit as st
@@ -60,6 +61,76 @@ def _tabla(registros, objetivos):
     } for r in registros])
 
 
+
+def _estilos_mi_gestion():
+    """Estilos exclusivos de Mi Gestión; sin alterar el tema global de RootMine."""
+    st.markdown("""<style>
+    /* Controles segmentados: mismo fondo oscuro en estados activos e inactivos. */
+    div[data-testid="stSegmentedControl"] [role="radiogroup"],
+    div[data-testid="stSegmentedControl"] [data-baseweb="button-group"],
+    div[data-testid="stSegmentedControl"] [data-baseweb="segmented-control"] {
+        background: #19232e !important; border: 1px solid #354456 !important;
+        border-radius: 10px !important; padding: 3px !important;
+    }
+    div[data-testid="stSegmentedControl"] button,
+    div[data-testid="stSegmentedControl"] [role="radio"],
+    div[data-testid="stSegmentedControl"] label {
+        background: #19232e !important; color: #d5e1ec !important;
+        border-color: #354456 !important; box-shadow: none !important;
+    }
+    div[data-testid="stSegmentedControl"] button[aria-checked="true"],
+    div[data-testid="stSegmentedControl"] button[aria-pressed="true"],
+    div[data-testid="stSegmentedControl"] [role="radio"][aria-checked="true"],
+    div[data-testid="stSegmentedControl"] label:has(input:checked) {
+        background: #31485b !important; color: #ffffff !important;
+        border-color: #41b6a3 !important;
+    }
+    div[data-testid="stSegmentedControl"] button:hover,
+    div[data-testid="stSegmentedControl"] label:hover {
+        background: #2b3d4c !important; color: #ffffff !important;
+    }
+    .mg-table-wrap {width:100%; overflow-x:auto; border:1px solid #344252;
+        border-radius:12px; background:#19212a; margin:10px 0 14px;}
+    .mg-table {width:100%; border-collapse:collapse; color:#e1e8ef;
+        font-size:0.83rem; table-layout:auto;}
+    .mg-table th {background:#243240; color:#c5d4e2; font-weight:600;
+        text-align:left; padding:10px 12px; white-space:nowrap;}
+    .mg-table td {padding:10px 12px; vertical-align:top; border-top:1px solid #344252;
+        overflow-wrap:anywhere; line-height:1.35;}
+    .mg-table tbody tr:hover {background:#24313e;}
+    .mg-table .mg-activity {min-width:220px; width:40%;}
+    .mg-table .mg-objective {min-width:180px;}
+    .mg-table .mg-small {white-space:nowrap;}
+    .mg-progress {display:flex; align-items:center; gap:8px; min-width:100px;}
+    .mg-track {height:7px; flex:1; background:#354454; border-radius:99px; overflow:hidden;}
+    .mg-fill {height:100%; background:#3eb79a; border-radius:99px;}
+    .mg-pct {min-width:30px; color:#d9e7f0; font-variant-numeric:tabular-nums;}
+    </style>""", unsafe_allow_html=True)
+
+
+def _tabla_oscura(df, columnas, limite=None):
+    """Tabla HTML solo visual; exportaciones Excel siguen usando los datos completos."""
+    vista=df[columnas].head(limite) if limite else df[columnas]
+    titulos={'Avance (%)':'Avance','Días para vencer':'Plazo (días)','Fecha compromiso':'Fecha'}
+    celdas=[]
+    for _,fila in vista.iterrows():
+        td=[]
+        for col in columnas:
+            valor=fila[col]
+            if col=='Avance (%)':
+                try: pct=max(0,min(100,int(valor)))
+                except (ValueError,TypeError): pct=0
+                contenido=f'<div class="mg-progress"><div class="mg-track"><div class="mg-fill" style="width:{pct}%"></div></div><span class="mg-pct">{pct}%</span></div>'
+            else:
+                if pd.isna(valor): valor='—'
+                contenido=escape(str(valor))
+            clase='mg-activity' if col=='Actividad' else 'mg-objective' if col=='Objetivo' else 'mg-small'
+            td.append(f'<td class="{clase}">{contenido}</td>')
+        celdas.append('<tr>'+''.join(td)+'</tr>')
+    cab=''.join(f'<th>{escape(titulos.get(c,c))}</th>' for c in columnas)
+    st.markdown('<div class="mg-table-wrap"><table class="mg-table"><thead><tr>'+cab+'</tr></thead><tbody>'+''.join(celdas)+'</tbody></table></div>',unsafe_allow_html=True)
+    if limite and len(df)>limite: st.caption(f'Mostrando {limite} de {len(df)} actividades. El Excel contiene el listado completo.')
+
 def _grafico(tareas, objetivos):
     import streamlit as st
     datos=[('Vencidas',sum((_dias(t.get('fecha_limite')) or 0)<0 for t in tareas),'#E26464'),
@@ -102,7 +173,7 @@ def _resumen(tareas,objetivos,usuario):
             if hijos:avances.append({'Objetivo':o['titulo'],'Avance (%)':round(sum(_pct(t) for t in hijos)/len(hijos))})
         if avances:
             df=pd.DataFrame(avances).sort_values('Avance (%)',ascending=False)
-            st.dataframe(df,hide_index=True,use_container_width=True,height=240,column_config={'Avance (%)':st.column_config.ProgressColumn('Avance (%)',min_value=0,max_value=100,format='%d%%')})
+            _tabla_oscura(df,['Objetivo','Avance (%)'])
         else:st.caption('Aún no hay tareas asociadas a objetivos.')
     st.caption('Los porcentajes reflejan ejecución de tareas, no cumplimiento de los indicadores operacionales.')
     filtro=st.segmented_control('Atención prioritaria',['Vencidas','Por vencer','Sin actualización','Todas'],default='Vencidas',key='filtro_prioridad')
@@ -110,9 +181,7 @@ def _resumen(tareas,objetivos,usuario):
     seleccion=sorted(seleccion,key=lambda t:(_dias(t.get('fecha_limite')) is None,_dias(t.get('fecha_limite')) if _dias(t.get('fecha_limite')) is not None else 99999))
     if seleccion:
         df=_tabla(seleccion,objetivos)
-        st.dataframe(df[['Actividad','Objetivo','Responsable','Fecha compromiso','Días para vencer','Avance (%)']],
-            hide_index=True,use_container_width=True,height=min(380,40+35*len(df)),
-            column_config={'Avance (%)':st.column_config.ProgressColumn('Avance (%)',min_value=0,max_value=100,format='%d%%')})
+        _tabla_oscura(df,['Actividad','Objetivo','Responsable','Fecha compromiso','Días para vencer','Avance (%)'],limite=12)
         st.caption('Abre la tarea en «Objetivos y tareas» para actualizar su avance o seguimiento.')
         st.download_button('📥 Descargar prioridades',_excel({'Prioridades':df}),file_name='Prioridades_Mi_Gestion.xlsx',key='excel_prioridades')
     else:st.info('No hay actividades en esta categoría.')
@@ -188,6 +257,7 @@ def mostrar_mi_gestion():
     registros=db.listar(usuario)
     objetivos=[r for r in registros if r['tipo']=='objetivo']
     tareas=[r for r in registros if r['tipo'] in ('tarea','compromiso')]
+    _estilos_mi_gestion()
     st.title('🔒 Mi Gestión')
     st.caption('Seguimiento privado de iniciativas, ejecución y resultados')
     tab0,tab1,tab2,tab3=st.tabs(['📊 Resumen ejecutivo','🎯 Objetivos y tareas','✨ Recomendaciones','📈 Resultados y reportes'])
@@ -296,7 +366,7 @@ def mostrar_mi_gestion():
         incluir=[t for t in tareas if t['estado']!='Descartada' and not (t['estado']=='Finalizada' and t.get('presentada'))]
         if incluir:
             df=_tabla(incluir,objetivos)
-            st.dataframe(df,hide_index=True,use_container_width=True)
+            _tabla_oscura(df,['Actividad','Objetivo','Estado','Avance (%)','Responsable','Fecha compromiso'],limite=15)
             st.download_button('📥 Descargar Mi Gestión actual',_excel({'Actividades':df}),file_name='Mi_Gestion_RootMine.xlsx',key='descargar_gestion')
         else:st.info('No hay actividades nuevas o pendientes de presentar.')
         pendientes=[t for t in tareas if t['estado']=='Finalizada' and not t.get('presentada')]
