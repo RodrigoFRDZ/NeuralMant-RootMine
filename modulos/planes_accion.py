@@ -1,5 +1,7 @@
 import base64
 import json
+import io
+import pandas as pd
 from datetime import date, datetime, timedelta
 
 import streamlit as st
@@ -188,6 +190,44 @@ def mostrar_planes_accion() -> None:
     if not con_planes:
         st.info("Aún no existen planes de acción registrados.")
         return
+
+    # Exportación general: no depende de filtros de pantalla.
+    filas = []
+    for adf, acciones in con_planes:
+        for numero, accion in enumerate(acciones, 1):
+            ac = accion if isinstance(accion, dict) else {"accion": str(accion)}
+            estado_raw = str(ac.get("estado_ejecucion") or "Pendiente").strip().lower()
+            if estado_raw in {"ejecutado", "ejecutado verificado", "completado", "cerrado", "anulado"}:
+                continue
+            fecha = _fecha(ac.get("fecha_compromiso"))
+            filas.append({
+                "ADF": adf.id, "Centro": adf.centro or "", "Área": adf.area or "",
+                "Equipo": adf.equipo or "", "Estado ADF": adf.estado or "",
+                "N° acción": numero, "Plan de acción": ac.get("accion") or "",
+                "Objetivo": ac.get("objetivo") or "",
+                "Responsable": ac.get("responsable_sugerido") or "Sin asignar",
+                "Fecha compromiso": fecha.isoformat() if fecha else "Sin fecha",
+                "Días de atraso": max(0, (date.today()-fecha).days) if fecha else "",
+                "Estado del plan": estado_calculado(ac),
+            })
+    if filas:
+        df = pd.DataFrame(filas)
+        df = df.sort_values(["Días de atraso", "Fecha compromiso"], ascending=[False, True], key=lambda x: pd.to_numeric(x,errors="coerce").fillna(-1) if x.name=="Días de atraso" else x)
+        resumen = df.groupby(["Área", "Responsable", "Estado del plan"], dropna=False).size().reset_index(name="Acciones pendientes")
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Planes pendientes", index=False)
+            resumen.to_excel(writer, sheet_name="Resumen responsables", index=False)
+            for hoja in writer.sheets.values():
+                hoja.freeze_panes = "A2"
+                hoja.auto_filter.ref = hoja.dimensions
+                for columna in hoja.columns:
+                    letra = columna[0].column_letter
+                    hoja.column_dimensions[letra].width = min(65,max(14,max(len(str(c.value or "")) for c in columna[:min(len(columna),300)])+3))
+        st.download_button("📥 Descargar planes de acción pendientes (Excel)", data=buffer.getvalue(), file_name=f"RootMine_Planes_Pendientes_{date.today().isoformat()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="descarga_planes_pendientes")
+        st.caption(f"{len(filas)} acciones abiertas en el archivo · incluye pendientes, por vencer y atrasadas de todos los ADF.")
+    else:
+        st.success("No hay planes de acción pendientes para exportar.")
 
     st.info("💡 Para una OT SAP, sube una captura donde se vea el encabezado/texto breve, Status de usuario y Fecha fin extrema. Si el Status contiene **CTEC + NOTI**, RootMine lo usa como señal fuerte de ejecución, pero también valida que la OT sea coherente con el plan. Para trabajos físicos puedes subir fotos **Antes** y **Después**.")
 

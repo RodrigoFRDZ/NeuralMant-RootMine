@@ -38,17 +38,23 @@ def mostrar_mi_gestion():
         for o in objetivos:
             subtareas=[t for t in tareas if t['padre_id']==o['id']]
             completadas=sum(t['estado']=='Finalizada' for t in subtareas)
+            avance_total=round(sum(100 if t['estado']=='Finalizada' else 0 if t['estado']=='Pendiente' else int(t.get('avance') or 0) for t in subtareas)/len(subtareas)) if subtareas else 0
             with st.expander(f"🎯 {o['titulo']} · {completadas}/{len(subtareas)} tareas",expanded=False):
                 st.write(o['objetivo'] or 'Sin descripción')
                 st.caption(f"{o['indicador'] or 'Indicador pendiente'} · Base: {o['linea_base'] or '—'} · Actual: {o['valor_actual'] or '—'} · Meta: {o['meta'] or '—'}")
-                st.progress(completadas/len(subtareas) if subtareas else 0, text=f'Avance de tareas: {round(100*completadas/len(subtareas)) if subtareas else 0}% (no equivale a mejora del indicador)')
+                st.progress(avance_total/100, text=f'Avance de ejecución: {avance_total}% (no equivale a mejora del indicador)')
                 for t in subtareas:
                     c1,c2=st.columns([4,2])
                     c1.markdown(f"**{t['titulo']}**")
                     c1.caption(f"Finalidad: {t['finalidad'] or 'Sin definir'} · Responsable: {t['responsable'] or 'Sin asignar'} · Plazo: {t['fecha_limite'] or 'Sin definir'}")
                     nuevo=c2.selectbox('Estado',ESTADOS,index=ESTADOS.index(t['estado']) if t['estado'] in ESTADOS else 0,key=f"estado_{t['id']}")
                     if nuevo!=t['estado']:
-                        db.actualizar(usuario,t['id'],estado=nuevo); st.rerun()
+                        db.actualizar(usuario,t['id'],estado=nuevo,avance=100 if nuevo=='Finalizada' else 0 if nuevo=='Pendiente' else max(1,min(99,int(t.get('avance') or 1)))); st.rerun()
+                    if nuevo=='En ejecución':
+                        porcentaje=c2.slider('Avance (%)',1,99,max(1,min(99,int(t.get('avance') or 1))),key=f"avance_{t['id']}")
+                        if porcentaje != int(t.get('avance') or 0):
+                            if c2.button('Guardar avance',key=f"guardar_avance_{t['id']}"):
+                                db.actualizar(usuario,t['id'],avance=porcentaje); st.rerun()
                 with st.form(f"tarea_{o['id']}"):
                     st.markdown('**Agregar tarea o subtarea**')
                     t=st.text_input('Actividad'); f=st.text_input('¿Para qué se realiza? (finalidad)')
