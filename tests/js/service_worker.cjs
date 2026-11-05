@@ -1,0 +1,14 @@
+const assert=require('assert'),fs=require('fs'),vm=require('vm'),path=require('path');
+const root=path.resolve(__dirname,'../../campo/web'),handlers={},files=new Map();let claimed=false;
+const cache={match:async key=>files.get(key)?.clone(),addAll:async urls=>{for(const url of urls){const name=url.endsWith('/')?'index.html':url.split('/').at(-1);files.set(url,new Response(fs.readFileSync(path.join(root,name))));}}};
+const caches={open:async()=>cache,keys:async()=>[],delete:async()=>{},match:async req=>{const key=typeof req==='string'?req:new URL(req.url).pathname;return files.get(key)?.clone();}};
+const self={location:new URL('http://localhost/neuralmant-campo/sw.js'),addEventListener:(name,fn)=>handlers[name]=fn,skipWaiting:async()=>{},clients:{claim:async()=>{claimed=true;}}};
+const context={self,caches,URL,location:self.location,importScripts:()=>{},fetch:async()=>{throw new Error('Sin conexión');},CampoSync:{sincronizar:async()=>{}}};
+vm.runInNewContext(fs.readFileSync(path.join(root,'sw.js'),'utf8'),context);
+(async()=>{let p;handlers.install({waitUntil:v=>p=v});await p;handlers.activate({waitUntil:v=>p=v});await p;assert(claimed);let respuesta;
+handlers.fetch({request:{url:'http://localhost/neuralmant-campo/?acceso=prueba',method:'GET',mode:'navigate'},respondWith:v=>respuesta=v});assert((await (await respuesta).text()).includes('Vista de terreno'));
+respuesta=undefined;handlers.fetch({request:{url:'http://localhost/neuralmant-campo/api/estado',method:'GET'},respondWith:v=>respuesta=v});assert.equal(respuesta,undefined);
+handlers.fetch({request:{url:'http://localhost/neuralmant-campo/assets/app.js',method:'GET'},respondWith:v=>respuesta=v});assert((await (await respuesta).text()).includes('CampoStore'));
+assert((await (await caches.match('/neuralmant-campo/assets/app.js')).text()).includes('CampoStore'));
+let reporte;handlers.message({data:{type:'COMPROBAR_CACHE'},ports:[{postMessage:v=>reporte=v}],waitUntil:v=>p=v});await p;assert(reporte.preparado);files.delete('/neuralmant-campo/assets/app.js');handlers.message({data:{type:'COMPROBAR_CACHE'},ports:[{postMessage:v=>reporte=v}],waitUntil:v=>p=v});await p;assert.equal(reporte.preparado,false);
+console.log('OK: service worker sirve página y scripts sin red y no cachea la API autenticada.');})();

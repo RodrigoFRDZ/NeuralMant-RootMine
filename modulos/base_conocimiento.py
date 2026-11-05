@@ -1,6 +1,7 @@
 import json
 import streamlit as st
 from database.repositorio_adf import listar_adf
+from modulos.agrupacion_fallas import agrupar_registros, normalizar, sugerir
 
 
 def _json(texto: str, defecto):
@@ -59,3 +60,31 @@ def mostrar_base_conocimiento() -> None:
                             st.write(f"• {accion.get('accion', 'Acción sin nombre')}")
                         else:
                             st.write(f"• {accion}")
+
+
+def _exportar_conocimiento(registros, reemplazos=None):
+    """Exportación estructurada sin modificar ADF originales."""
+    import io
+    import pandas as pd
+    filas=[]
+    acciones=[]
+    reemplazos = reemplazos or {}
+    grupos_export=[]
+    for a in registros:
+        original = str(getattr(a, "efecto", "") or "")
+        grupo = reemplazos.get(normalizar(original)) or sugerir(original)
+        grupos_export.append({"ADF": a.id, "Grupo genérico": grupo, "Modo de falla original": original,
+                              "Equipo": a.equipo, "Área": a.area})
+        filas.append({'ADF':a.id,'Centro':getattr(a,'centro',''),'Planta':getattr(a,'planta',''),
+                      'Área':a.area,'Equipo':a.equipo,'N° equipo':getattr(a,'numero_equipo',''),
+                      'Estado':getattr(a,'estado',''),'Grupo genérico':grupo,'Fenómeno':a.efecto,'Relato':a.relato_original,
+                      'Conclusión':a.conclusion,'Fecha actualización':str(a.fecha_actualizacion)})
+        for p in _json(a.plan_prevencion,[]):
+            acciones.append({'ADF':a.id,'Equipo':a.equipo,'Acción':p.get('accion','') if isinstance(p,dict) else str(p),
+                             'Detalle':json.dumps(p,ensure_ascii=False) if isinstance(p,dict) else ''})
+    b=io.BytesIO()
+    with pd.ExcelWriter(b,engine='openpyxl') as w:
+        pd.DataFrame(grupos_export).to_excel(w,sheet_name='Modos agrupados',index=False)
+        pd.DataFrame(filas).to_excel(w,sheet_name='ADF',index=False)
+        pd.DataFrame(acciones,columns=['ADF','Equipo','Acción','Detalle']).to_excel(w,sheet_name='Acciones',index=False)
+    return b.getvalue()

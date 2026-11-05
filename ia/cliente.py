@@ -1,5 +1,11 @@
 import os
 import re
+import time
+import random
+import json
+import logging
+import urllib.request
+import urllib.error
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TypeVar
@@ -85,9 +91,8 @@ def _mensaje_cuota(error: Exception) -> str:
                 pass
 
     base = (
-        "🔧 GearBot está temporalmente en mantención porque alcanzó el límite "
-        "de consultas disponible en este momento. Puedes seguir trabajando en "
-        "RootMine; GearBot volverá a ayudarte en un momento más."
+        "🔧 GearBot está experimentando algunos inconvenientes técnicos. "
+        "Puedes continuar trabajando en RootMine e intentarlo nuevamente en unos instantes."
     )
     if espera:
         if espera < 60:
@@ -119,6 +124,33 @@ def limites_configurados() -> dict:
     }
 
 
+def _openai_respaldo(sistema: str, contenido: str, esquema: type[T]) -> T:
+    """Respaldo independiente optativo; solo se activa con OPENAI_API_KEY."""
+    clave = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY", "")
+    if not clave:
+        raise RuntimeError("Respaldo independiente no configurado")
+    modelo = _secret("OPENAI_FALLBACK_MODEL") or os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4.1-mini")
+    payload = {
+        "model": modelo,
+        "messages": [
+            {"role": "system", "content": sistema + "\nDevuelve exclusivamente un objeto JSON válido que cumpla este esquema: " + json.dumps(esquema.model_json_schema(), ensure_ascii=False)},
+            {"role": "user", "content": contenido},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.15,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": "Bearer " + clave, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=65) as respuesta:
+        data = json.load(respuesta)
+    texto = data["choices"][0]["message"]["content"]
+    return esquema.model_validate_json(texto)
+
+
 def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str, esquema: type[T]) -> T:
     try:
         from google import genai
@@ -126,37 +158,64 @@ def _gemini_estructurado(modelo: str, api_key: str, sistema: str, contenido: str
     except ImportError as error:
         raise RuntimeError("Falta instalar google-genai. Ejecuta INSTALAR_ROOTMINE.bat.") from error
 
-    rapido=getattr(esquema,"__name__","")=="NovedadAutomatica"
-    opciones_cliente={"api_key":api_key}
-    if rapido:opciones_cliente["http_options"]=types.HttpOptions(timeout=20000)
-    client = genai.Client(**opciones_cliente)
+    rapido = getattr(esquema, "__name__", "") == "NovedadAutomatica"
+    client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=25000 if rapido else 60000))
     operacion = getattr(esquema, "__name__", "GeneracionIA")
-    try:
-        respuesta = client.models.generate_content(
-            model=modelo,
-            contents=contenido,
-            config=types.GenerateContentConfig(
-                system_instruction=sistema,
-                response_mime_type="application/json",
-                response_schema=esquema,
-                temperature=0.15,
-                max_output_tokens=2048 if rapido else 8192,
-            ),
-        )
-        registrar_uso_ia(modelo, operacion, "ok", _usuario_email_actual())
-    except Exception as error:
-        if _es_error_cuota(error):
-            registrar_uso_ia(modelo, operacion, "cuota", _usuario_email_actual())
-            raise GearBotTemporalmenteNoDisponible(_mensaje_cuota(error)) from None
-        registrar_uso_ia(modelo, operacion, "error", _usuario_email_actual())
-        raise
-    parsed = getattr(respuesta, "parsed", None)
-    if parsed is not None:
-        return parsed if isinstance(parsed, esquema) else esquema.model_validate(parsed)
-    texto = (getattr(respuesta, "text", "") or "").strip()
-    if not texto:
-        raise RuntimeError("Gemini no devolvió contenido estructurado.")
-    return esquema.model_validate_json(texto)
+    respaldo = _secret("GEMINI_FALLBACK_MODEL") or os.getenv("GEMINI_FALLBACK_MODEL", "")
+    # Modelo secundario independiente de configuración manual; se puede cambiar en Secrets.
+    modelos = list(dict.fromkeys([modelo, respaldo.strip() or "gemini-2.5-flash"]))
+    ultimo_error = None
+    for modelo_actual in modelos:
+        for intento in range(2):
+            try:
+                respuesta = client.models.generate_content(
+                    model=modelo_actual,
+                    contents=contenido,
+                    config=types.GenerateContentConfig(
+                        system_instruction=sistema,
+                        response_mime_type="application/json",
+                        response_schema=esquema,
+                        temperature=0.15,
+                        max_output_tokens=2048 if rapido else 8192,
+                    ),
+                )
+                parsed = getattr(respuesta, "parsed", None)
+                if parsed is not None:
+                    resultado = parsed if isinstance(parsed, esquema) else esquema.model_validate(parsed)
+                else:
+                    texto = (getattr(respuesta, "text", "") or "").strip()
+                    resultado = esquema.model_validate_json(texto)
+                registrar_uso_ia(modelo_actual, operacion, "ok", _usuario_email_actual())
+                return resultado
+            except Exception as error:
+                ultimo_error = error
+                texto_error = str(error).lower()
+                temporal = any(x in texto_error for x in (
+                    "503", "502", "504", "unavailable", "high demand", "overloaded",
+                    "429", "resource_exhausted", "rate limit", "timeout", "timed out",
+                ))
+                registrar_uso_ia(modelo_actual, operacion, "temporal" if temporal else "error", _usuario_email_actual())
+                logging.getLogger(__name__).warning("GearBot IA: modelo=%s intento=%s error=%s", modelo_actual, intento + 1, type(error).__name__)
+                if not temporal:
+                    # Error de permisos/configuración: otro modelo puede funcionar, pero no repetir el mismo.
+                    break
+                if intento == 0:
+                    time.sleep(2 + random.uniform(0, 0.5))
+
+    if _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"):
+        try:
+            resultado = _openai_respaldo(sistema, contenido, esquema)
+            registrar_uso_ia("respaldo_externo", operacion, "ok", _usuario_email_actual())
+            return resultado
+        except Exception as error:
+            logging.getLogger(__name__).warning("GearBot IA: respaldo externo falló: %s", type(error).__name__)
+            registrar_uso_ia("respaldo_externo", operacion, "error", _usuario_email_actual())
+
+    raise GearBotTemporalmenteNoDisponible(
+        "🔧 GearBot está experimentando algunos inconvenientes técnicos en este momento. "
+        "Tu análisis y los avances realizados permanecen guardados. "
+        "Intenta nuevamente en unos instantes."
+    ) from None
 
 
 def _generar(sistema: str, contenido: str, esquema: type[T]) -> T:
