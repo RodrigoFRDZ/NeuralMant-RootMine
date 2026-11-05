@@ -425,11 +425,11 @@ def descartar_novedades_anteriores(correo,n,ident):
             j.estado='respondida';j.token=''
 
 
-def registrar_prueba(correo,n,ident,version,accion,texto=''):
+def registrar_prueba(correo,n,ident,version,accion,texto='',fotos=()):
     from motores.pruebas_trabajos import transicion
     with Session(engine) as s,s.begin():
         u=_usuario(s,correo);_programa(s,u,n,True);_editable(s,n)
         t=s.get(TrabajoFinSemana,ident)
         if not t or t.programa!=n:raise ValueError('Trabajo no disponible.')
         cambio=transicion(json.loads(t.datos),accion,texto)
-        return actualizar(correo,n,ident,version,cambio,mensaje=texto or {'posponer_prueba':'Las pruebas de funcionamiento aún no se han realizado. Quedan pendientes de validación.','iniciar_prueba':'Se realizaron las pruebas de funcionamiento.','sin_observaciones':'Funcionamiento normal, sin observaciones.','con_observaciones':'Se observaron anomalías durante la prueba.','impide_partida':'La observación impide la partida.','no_impide_partida':'La observación no impide la partida ni el funcionamiento normal.'}.get(accion,accion),_sesion=s)
+        return actualizar(correo,n,ident,version,cambio,fotos=fotos,mensaje=texto or {'posponer_prueba':'Las pruebas de funcionamiento aún no se han realizado. Quedan pendientes de validación.','iniciar_prueba':'Se realizaron las pruebas de funcionamiento.','sin_observaciones':'Funcionamiento normal, sin observaciones.','con_observaciones':'Se observaron anomalías durante la prueba.','impide_partida':'La observación impide la partida.','no_impide_partida':'La observación no impide la partida ni el funcionamiento normal.'}.get(accion,accion),_sesion=s)

@@ -13,6 +13,7 @@ from reportlab.platypus import SimpleDocTemplate,Paragraph,Spacer,Table,TableSty
 from reportlab.lib.pagesizes import A4
 from database import trabajos as db
 from motores.foco_partida import focos
+from motores.redaccion_informe import consolidar,corregir
 
 def _fecha(valor):
     if not valor:return 'Sin actualización'
@@ -35,6 +36,13 @@ def render_pdf(corte,imagenes=None):
     from ia.resumen_turno import resumen_base
     imagenes=imagenes or {};filas=corte['trabajos'];novedades=corte.get('novedades_area',[])
     analisis=focos(filas,novedades)
+    # Editorial fields replace wording only; source categories and references remain.
+    redactados={f.get('id'):f for f in corte.get('focos_redactados',[]) if isinstance(f,dict)}
+    for clave,grupo in analisis.items():
+        for i,f in enumerate(grupo):
+            nuevo=redactados.get(f'{clave}:{i}',{})
+            if nuevo.get('detalle') and nuevo.get('accion'):
+                f.update(detalle=nuevo['detalle'],accion=nuevo['accion'])
     fuentes=Path(__file__).resolve().parents[1]/'assets/fonts'
     if 'Trabajo-Regular' not in pdfmetrics.getRegisteredFontNames():
         for tipo,archivo in [('Regular','Reporte-Regular.ttf'),('Bold','Reporte-Bold.ttf')]:
@@ -91,10 +99,13 @@ def render_pdf(corte,imagenes=None):
     tabla_datos(['Área','Terminadas / total','Verificadas','Terminadas por revisar','Novedades abiertas'],rows or [['Sin actividades','0/0','0','0','0']],[.28,.18,.17,.19,.18])
     elementos.append(p('Actividades del programa',estilos['Heading2']))
     actividad_rows=[]
+    observaciones_en_prioridades={f['referencia'] for f in analisis['semana']}
     for d in filas:
         avance=str(d['avance'])+'%' if d.get('avance') is not None else 'Sin porcentaje'
         if d.get('origen_avance')=='estimado_etapas':avance+=' (estimado)'
-        actividad_rows.append([d['descripcion']+'\n'+d['area'],d['estado']+'\n'+avance,d['prueba']+('\n'+completo(d.get('detalle_prueba')) if d.get('detalle_prueba') else '')])
+        detalle=consolidar([d.get('detalle_prueba')],d['descripcion'])
+        if f"{d['descripcion']} · {d['area']}" in observaciones_en_prioridades and detalle:detalle='Observación en prioridades.'
+        actividad_rows.append([d['descripcion']+'\n'+d['area'],d['estado']+'\n'+avance,d['prueba']+('\n'+detalle if detalle else '')])
     if actividad_rows:tabla_datos(['Actividad / área','Estado / avance','Prueba informada'],actividad_rows,[.49,.22,.29])
     elementos.append(p('03 / Prioridades y acciones propuestas',estilos['Heading2']))
     rows=[];vistos=set()
@@ -106,15 +117,15 @@ def render_pdf(corte,imagenes=None):
             rows.append([etiqueta_foco+'\n'+f['referencia'],completo(f['detalle']),completo(f['accion'])])
     if rows:tabla_datos(['Foco / actividad o área','Antecedente relevante','Acción propuesta'],rows,[.29,.40,.31])
     else:elementos.append(p('No se identifican focos específicos en lo informado. Confirmar condiciones en terreno.',nota))
-    elementos.append(p('Los antecedentes históricos requieren confirmar su vigencia. Las propuestas no asignan responsables ni plazos que no hayan sido informados. Un comentario escrito tarde no demuestra una entrega tardía.',nota))
+    elementos.append(p('Confirmar en terreno la vigencia de los antecedentes y las condiciones de entrega.',nota))
     elementos.append(p('04 / Novedades de las áreas',estilos['Heading2']))
     # One concise entry per observation; resolutions are attached to the original.
     rows=[]
     for a in novedades:
         if a.get('resuelve'):continue
         tratamiento='Pendiente de resolución informada.'
-        if a.get('cierre'):tratamiento='Resolución: '+completo(a['cierre']['mensaje'])
-        rows.append([a['area']+'\n'+a['categoria']+' · '+a['estado'],completo(a['mensaje']),tratamiento+'\n'+a['nombre']+' · '+_fecha(a['fecha'])])
+        if a.get('cierre'):tratamiento='Resolución: '+consolidar([a['cierre']['mensaje']],a.get('area',''))
+        rows.append([a['area']+'\n'+a['categoria']+' · '+a['estado'],consolidar([a['mensaje']],a.get('area','')),tratamiento+'\n'+a['nombre']+' · '+_fecha(a['fecha'])])
     if rows:tabla_datos(['Área / tipo / estado','Antecedente relevante','Tratamiento / trazabilidad'],rows,[.25,.43,.32])
     else:elementos.append(p('Sin novedades generales registradas.',nota))
     if corte.get('sugerencias') and not corte.get('sugerencias_automaticas'):

@@ -1,3 +1,5 @@
+from modulos.mi_gestion import mostrar_mi_gestion
+from database.mi_gestion import autorizado as gestion_autorizado
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -423,7 +425,7 @@ def mostrar_identificacion() -> None:
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
-        st.markdown('<div class="creator-seal">NeuralMant Suite v4.8.18 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
+        st.markdown('<div class="creator-seal">NeuralMant Suite v4.8.22 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
         st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
 
 def _opciones_navegacion(usuario, pagina):
@@ -433,6 +435,8 @@ def _opciones_navegacion(usuario, pagina):
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
         opciones.append("✅ Aprobaciones de materiales")
+    if gestion_autorizado(usuario):
+        opciones.append("🔒 Mi Gestión")
     if usuario.get("es_admin"):
         opciones.append("👥 Administración de cuentas")
     opciones.append("ℹ️ Acerca de")
@@ -472,7 +476,7 @@ def mostrar_menu() -> str:
         st.caption("🔔 Notificaciones internas activas")
         st.caption("✉️ Correo externo desactivado en v4.1")
 
-        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.8.18 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sidebar-credit">NeuralMant Suite v4.8.22 Cloud<br>© 2026 Rodrigo Fernández</div>', unsafe_allow_html=True)
         return pagina
 
 
@@ -490,6 +494,14 @@ def main() -> None:
 
     restaurar_contexto_navegacion()
     abrir_material_desde_url()
+    # Acceso a cerrar sesión aunque el menú lateral esté oculto.
+    with st.container():
+        col_espacio, col_salir = st.columns([6, 1])
+        with col_salir:
+            if st.button("🚪 Salir", key="logout_visible", use_container_width=True,
+                         help="Cerrar sesión de NeuralMant"):
+                cerrar_sesion_rootmine()
+                st.rerun()
     pagina = mostrar_menu()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
@@ -511,6 +523,11 @@ def main() -> None:
         st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
         mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
+    elif pagina == "🔒 Mi Gestión":
+        if not gestion_autorizado(st.session_state.usuario_actual):
+            st.error("Acceso no autorizado.")
+            st.stop()
+        mostrar_mi_gestion()
     elif pagina == "👥 Administración de cuentas": mostrar_administracion()
     else: mostrar_acerca()
 
