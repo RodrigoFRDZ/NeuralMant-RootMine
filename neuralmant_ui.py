@@ -5,11 +5,10 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 from modulos.gearbot_animado import mostrar_gearbot
-import extra_streamlit_components as stx
 
 from database.conexion import crear_tablas, descripcion_backend, usando_nube
 from database.usuarios import buscar_usuario_por_correo, resumen_maestro, etiqueta_rol, inicializar_maestro_usuarios
-from database.llaves_acceso import crear_llave, requiere_llave, tiene_llave, validar_llave
+from database.llaves_acceso import crear_llave, requiere_llave, tiene_llave, validar_llave, puede_autoactivar, intento_permitido, registrar_intento
 from database.sesiones import crear_sesion, validar_y_tocar_sesion, cerrar_sesion
 from ia.cliente import obtener_configuracion
 from modulos.acerca import mostrar_acerca
@@ -34,58 +33,22 @@ st.set_page_config(
 )
 
 
+# SECURITY: no browser cookies or process-global CookieManager for authentication.
+# Authentication remains isolated in Streamlit's per-WebSocket session_state.
+# A full refresh requires login again; this is deliberate until a verified
+# browser-bound persistence mechanism is implemented.
 COOKIE_SESION = "rootmine_session"
 COOKIE_PAGINA = "rootmine_page"
 COOKIE_BORRADOR = "rootmine_draft"
-_COOKIE_MANAGER = None
-
-
-def _cookie_manager():
-    """Una sola instancia por ejecución para leer/escribir cookies del navegador."""
-    global _COOKIE_MANAGER
-    if _COOKIE_MANAGER is None:
-        _COOKIE_MANAGER = stx.CookieManager(key="rootmine_cookie_manager")
-    return _COOKIE_MANAGER
-
 
 def _leer_cookie(nombre: str) -> str:
-    try:
-        return str(_cookie_manager().get(nombre) or "").strip()
-    except Exception:
-        return ""
-
+    return ""
 
 def _guardar_cookie(nombre: str, valor: str, *, max_age: int = 43200) -> None:
-    """Guarda solo si cambió, evitando reruns innecesarios del componente."""
-    valor = str(valor or "")
-    try:
-        manager = _cookie_manager()
-        actual = str(manager.get(nombre) or "")
-        if actual == valor:
-            return
-        manager.set(
-            nombre,
-            valor,
-            key=f"set_{nombre}_{abs(hash(valor)) % 10_000_000}",
-            path="/",
-            max_age=max_age,
-            secure=True,
-            same_site="strict",
-        )
-    except Exception:
-        pass
-
+    return None
 
 def _borrar_cookie(nombre: str) -> None:
-    try:
-        manager = _cookie_manager()
-        if manager.get(nombre) is not None:
-            manager.delete(nombre, key=f"delete_{nombre}")
-    except Exception:
-        pass
-
-
-
+    return None
 
 @st.cache_resource(show_spinner=False)
 def preparar_backend(version_esquema: str = "4.8.5") -> bool:
@@ -289,31 +252,27 @@ def cerrar_sesion_rootmine() -> None:
 
 
 def restaurar_sesion_persistente() -> None:
-    """Restaura tras F5 y renueva actividad como máximo cada 5 minutos."""
-    token = _token_sesion_actual()
+    """Validate the session token on every rerun; fail closed on any mismatch."""
+    token = str(st.session_state.get("token_sesion") or "").strip()
     if not token:
+        st.session_state.usuario_actual = None
+        st.session_state.usuario = ""
         return
-    ahora = datetime.now()
-    if st.session_state.get("usuario_actual"):
-        ultimo = st.session_state.get("ultimo_toque_sesion")
-        if ultimo and (ahora - ultimo) < timedelta(minutes=5):
-            return
+    try:
         correo = validar_y_tocar_sesion(token)
-        if correo:
-            st.session_state.ultimo_toque_sesion = ahora
-            return
-        st.session_state.usuario = ""; st.session_state.usuario_actual = None; st.session_state.login_pendiente = None; _limpiar_token_sesion(); return
-    correo = validar_y_tocar_sesion(token)
-    if not correo:
-        st.session_state.usuario = ""; st.session_state.usuario_actual = None; st.session_state.login_pendiente = None; _limpiar_token_sesion(); return
-    usuario = buscar_usuario_por_correo(correo)
-    if not usuario:
-        cerrar_sesion(token); st.session_state.usuario = ""; st.session_state.usuario_actual = None; _limpiar_token_sesion(); return
-    st.session_state.token_sesion = token
+        usuario = buscar_usuario_por_correo(correo) if correo else None
+    except Exception:
+        correo, usuario = None, None
+    previo = st.session_state.get("usuario_actual") or {}
+    if not usuario or (previo and previo.get("correo", "").lower() != correo):
+        st.session_state.usuario = ""
+        st.session_state.usuario_actual = None
+        st.session_state.login_pendiente = None
+        _limpiar_token_sesion()
+        return
     st.session_state.usuario_actual = usuario
     st.session_state.usuario = usuario["nombre"]
-    st.session_state.login_pendiente = None
-    st.session_state.ultimo_toque_sesion = ahora
+    st.session_state.ultimo_toque_sesion = datetime.now()
 
 def _completar_login(usuario: dict) -> None:
     token = crear_sesion(usuario.get("correo", ""))
@@ -374,45 +333,65 @@ def mostrar_identificacion() -> None:
                 usuario = buscar_usuario_por_correo(correo)
                 if not usuario:
                     st.error("Este correo no está habilitado en el maestro de usuarios de NeuralMant.")
-                elif requiere_llave(usuario):
+                else:
                     st.session_state.login_pendiente = usuario
                     st.rerun()
-                else:
-                    _completar_login(usuario)
         else:
             nombre = pendiente.get("nombre", "Usuario")
             rol = etiqueta_rol(pendiente.get("rol", ""))
             correo = pendiente.get("correo", "")
-            st.markdown('<div class="login-form-title">Acceso de validador</div>', unsafe_allow_html=True)
+            st.markdown('<div class="login-form-title">Acceso seguro</div>', unsafe_allow_html=True)
             st.caption(f"{nombre} · {rol}")
             st.text_input("Correo corporativo", value=correo, disabled=True, key="correo_validador")
 
             if tiene_llave(correo):
-                st.info("🔐 Este perfil requiere una clave personal para ingresar y aprobar solicitudes.")
+                st.info("🔐 Ingresa tu contraseña personal.")
                 with st.form("validar_llave_acceso"):
                     llave = st.text_input("Clave de acceso", type="password")
                     entrar = st.form_submit_button("Validar e ingresar →", type="primary", use_container_width=True)
                 if entrar:
-                    if validar_llave(correo, llave):
-                        _completar_login(pendiente)
+                    if not intento_permitido(correo):
+                        st.error("Demasiados intentos. Espera 15 minutos antes de volver a intentar.")
                     else:
-                        st.error("La clave de acceso no es correcta.")
+                        correcto = validar_llave(correo, llave)
+                        registrar_intento(correo, correcto)
+                        if correcto:
+                            usuario_vigente = buscar_usuario_por_correo(correo)
+                            if usuario_vigente:
+                                _completar_login(usuario_vigente)
+                            else:
+                                st.error("Cuenta no disponible.")
+                        else:
+                            st.error("Credenciales incorrectas.")
             else:
-                st.warning("🔑 Primer ingreso como validador: crea tu clave personal. La necesitarás en los próximos accesos.")
+                if not puede_autoactivar(pendiente):
+                    st.error("Esta cuenta requiere activación verificada por un administrador. No es posible crear la contraseña directamente.")
+                    if st.button("← Usar otro correo", key="volver_privilegiado"):
+                        st.session_state.login_pendiente = None
+                        st.rerun()
+                    return
+                st.warning("Primer ingreso: crea tu contraseña. Esta activación provisional no verifica la propiedad del correo; úsala solo con autorización.")
                 with st.form("crear_llave_acceso"):
-                    llave1 = st.text_input("Crear clave", type="password", help="Mínimo 6 caracteres")
+                    llave1 = st.text_input("Crear clave", type="password", help="Mínimo 12 caracteres")
                     llave2 = st.text_input("Repetir clave", type="password")
                     crear = st.form_submit_button("Crear clave e ingresar →", type="primary", use_container_width=True)
                 if crear:
                     if llave1 != llave2:
-                        st.error("Las llaves no coinciden.")
+                        st.error("Las contraseñas no coinciden.")
+                    elif not intento_permitido(correo):
+                        st.error("Demasiados intentos. Espera 15 minutos.")
                     else:
                         try:
-                            crear_llave(correo, llave1)
-                            st.success("Clave creada correctamente.")
-                            _completar_login(pendiente)
-                        except Exception as error:
-                            st.error(str(error))
+                            usuario_vigente = buscar_usuario_por_correo(correo)
+                            if not puede_autoactivar(usuario_vigente):
+                                st.error("La cuenta requiere activación verificada.")
+                            else:
+                                crear_llave(correo, llave1)
+                                registrar_intento(correo, True)
+                                _completar_login(usuario_vigente)
+                        except Exception:
+                            registrar_intento(correo, False)
+                            st.error("No se pudo activar la cuenta. Verifica los requisitos o consulta al administrador.")
 
             if st.button("← Usar otro correo", use_container_width=True):
                 st.session_state.login_pendiente = None
@@ -420,13 +399,13 @@ def mostrar_identificacion() -> None:
 
         st.markdown(
             '<div class="login-access-note">ⓘ &nbsp;Acceso permitido solo para cuentas corporativas registradas.<br>'
-            '<span>Los perfiles que lo requieren utilizan además una clave personal.</span></div>',
+            '<span>Todos los usuarios necesitan contraseña personal.</span></div>',
             unsafe_allow_html=True,
         )
         resumen = resumen_maestro()
         st.markdown(f'<div class="login-master">👥 &nbsp;Maestro v4.5.2 · {resumen["total"]} usuarios habilitados</div>', unsafe_allow_html=True)
         st.markdown('<div class="creator-seal">NeuralMant Suite v4.8.22 Cloud · Creado por <b>Rodrigo Fernández</b></div>', unsafe_allow_html=True)
-        st.caption("🔒 La sesión no se comparte mediante la URL. Cada usuario debe iniciar sesión con su propia cuenta.")
+        st.caption("🔒 Sesión individual. Al actualizar la página deberás ingresar nuevamente.")
 
 def _opciones_navegacion(usuario, pagina):
     opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
@@ -528,7 +507,11 @@ def main() -> None:
             st.error("Acceso no autorizado.")
             st.stop()
         mostrar_mi_gestion()
-    elif pagina == "👥 Administración de cuentas": mostrar_administracion()
+    elif pagina == "👥 Administración de cuentas":
+        if not st.session_state.usuario_actual.get("es_admin"):
+            st.error("Acceso no autorizado.")
+            st.stop()
+        mostrar_administracion()
     else: mostrar_acerca()
 
 

@@ -94,9 +94,6 @@ def _normalizar_usuario(usuario: dict) -> dict:
     u["responsable_de"] = _resp_lista(u.get("responsable_de"))
     u["activo"] = bool(u.get("activo", True))
     u["es_admin"] = bool(u.get("es_admin", False))
-    # La cuenta maestra histórica nace como administrador en una instalación nueva.
-    if u["correo"] == "rfernandezc@agrosuper.com":
-        u["es_admin"] = True
     return u
 
 

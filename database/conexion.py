@@ -99,10 +99,6 @@ def crear_tablas() -> None:
                     conexion.execute(text("ALTER TABLE usuario_rootmine ADD COLUMN es_admin BOOLEAN NOT NULL DEFAULT FALSE"))
                 else:
                     conexion.execute(text("ALTER TABLE usuario_rootmine ADD COLUMN es_admin BOOLEAN NOT NULL DEFAULT 0"))
-        # Garantiza que la cuenta maestra inicial no pierda acceso al migrar.
-        with engine.begin() as conexion:
-            conexion.execute(text("UPDATE usuario_rootmine SET es_admin = TRUE WHERE lower(correo) = 'rfernandezc@agrosuper.com'"))
-
     # v4.1.3: columnas para borradores persistentes.
     if "adf" in inspector.get_table_names():
         cols_adf = {c["name"] for c in inspector.get_columns("adf")}

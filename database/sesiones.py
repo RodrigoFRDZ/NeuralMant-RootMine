@@ -11,6 +11,7 @@ from database.conexion import engine
 from database.modelos import SesionRootMine
 
 MINUTOS_INACTIVIDAD = 30
+HORAS_MAXIMAS = 12
 
 
 def _hash_token(token: str) -> str:
@@ -48,7 +49,8 @@ def validar_y_tocar_sesion(token: str) -> str | None:
         )
         if not registro:
             return None
-        if ahora - registro.ultima_actividad > timedelta(minutes=MINUTOS_INACTIVIDAD):
+        if (ahora - registro.ultima_actividad > timedelta(minutes=MINUTOS_INACTIVIDAD)
+                or ahora - registro.fecha_creacion > timedelta(hours=HORAS_MAXIMAS)):
             session.delete(registro)
             session.commit()
             return None
@@ -63,4 +65,11 @@ def cerrar_sesion(token: str) -> None:
         return
     with Session(engine) as session:
         session.execute(delete(SesionRootMine).where(SesionRootMine.token_hash == _hash_token(token)))
+        session.commit()
+
+
+def revocar_sesiones_usuario(correo: str) -> None:
+    """Call after a password reset, role change, or account deactivation."""
+    with Session(engine) as session:
+        session.execute(delete(SesionRootMine).where(SesionRootMine.correo == correo.strip().lower()))
         session.commit()
