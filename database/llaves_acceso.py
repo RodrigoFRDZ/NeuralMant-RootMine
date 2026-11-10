@@ -13,6 +13,7 @@ from database.modelos import LlaveAcceso
 
 ROLES_CON_LLAVE = {"supervisor", "coordinador_mantenimiento", "coordinador", "jefe", "ingeniero", "subgerente", "analizador_materiales"}
 ITERACIONES = 600_000
+ITERACIONES_ANTERIORES = 210_000
 # Process-local throttle; production deployment should replace with shared DB/Redis
 # limits if more than one server instance is used.
 _INTENTOS = {}
@@ -56,8 +57,8 @@ def requiere_llave(usuario: dict | None) -> bool:
     return True
 
 
-def _derivar(llave: str, salt: bytes) -> bytes:
-    return hashlib.pbkdf2_hmac("sha256", llave.encode("utf-8"), salt, ITERACIONES)
+def _derivar(llave: str, salt: bytes, iteraciones: int = ITERACIONES) -> bytes:
+    return hashlib.pbkdf2_hmac("sha256", llave.encode("utf-8"), salt, iteraciones)
 
 
 def tiene_llave(correo: str) -> bool:
@@ -91,6 +92,10 @@ def crear_llave(correo: str, llave: str) -> None:
 
 
 def validar_llave(correo: str, llave: str) -> bool:
+    """Admite claves existentes (210k) y nuevas (600k), migrando al validar.
+
+    No altera ninguna clave cuando la contraseña es incorrecta.
+    """
     correo = (correo or "").strip().lower()
     with Session(engine) as session:
         registro = session.scalar(select(LlaveAcceso).where(LlaveAcceso.correo == correo))
@@ -98,8 +103,20 @@ def validar_llave(correo: str, llave: str) -> bool:
             return False
         salt = base64.b64decode(registro.salt_b64.encode("ascii"))
         esperado = base64.b64decode(registro.hash_b64.encode("ascii"))
-        obtenido = _derivar((llave or "").strip(), salt)
-        return hmac.compare_digest(esperado, obtenido)
+        # Nunca eliminar espacios de una contraseña ya establecida: son significativos.
+        clave = llave or ""
+        actual = _derivar(clave, salt, ITERACIONES)
+        if hmac.compare_digest(esperado, actual):
+            return True
+        anterior = _derivar(clave, salt, ITERACIONES_ANTERIORES)
+        if not hmac.compare_digest(esperado, anterior):
+            return False
+        # Rehash transparente al algoritmo actual, con sal nueva.
+        sal_nueva = os.urandom(16)
+        registro.salt_b64 = base64.b64encode(sal_nueva).decode("ascii")
+        registro.hash_b64 = base64.b64encode(_derivar(clave, sal_nueva, ITERACIONES)).decode("ascii")
+        session.commit()
+        return True
 
 
 def eliminar_llave(correo: str) -> bool:
