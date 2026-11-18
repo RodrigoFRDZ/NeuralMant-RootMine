@@ -213,7 +213,7 @@ def mostrar_rootmine() -> None:
                 st.session_state.pagina = "🔒 Mi Gestión"
                 st.rerun()
     st.markdown("### Accesos rápidos")
-    a1, a2, a3, a4, a5 = st.columns(5)
+    a1, a2, a3, a4, a5, a6 = st.columns(6)
     with a1:
         st.markdown('<div class="action-card blue"><div class="action-icon">📝</div><h3>Nuevo ADF</h3><p>Inicia un análisis guiado de causa raíz.</p></div>', unsafe_allow_html=True)
         if st.button("Comenzar →", type="primary", use_container_width=True, key="dash_nuevo"):
@@ -229,6 +229,11 @@ def mostrar_rootmine() -> None:
         st.markdown('<div class="action-card green"><div class="action-icon">📊</div><h3>Indicadores</h3><p>Visualiza métricas del conocimiento generado.</p></div>', unsafe_allow_html=True)
         if st.button("Ver indicadores →", use_container_width=True, key="dash_ind"):
             st.session_state.pagina = "📊 Indicadores"
+            st.rerun()
+    with a6:
+        st.markdown('<div class="action-card blue"><div class="action-icon">📈</div><h3>Historial de Fallas y Reincidencias</h3><p>Revisa eventos, detecta fallas repetitivas y evalúa los ADF.</p></div>', unsafe_allow_html=True)
+        if st.button("Ver fallas →", use_container_width=True, key="dash_historial_fallas"):
+            st.session_state.pagina = "📈 Historial de Fallas y Reincidencias"
             st.rerun()
     with a4:
         st.markdown('<div class="action-card amber"><div class="action-icon">📋</div><h3>Planes</h3><p>Gestiona vencimientos, respaldos y cierre de acciones.</p></div>', unsafe_allow_html=True)

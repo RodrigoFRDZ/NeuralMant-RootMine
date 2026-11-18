@@ -123,7 +123,7 @@ def barra_inicio(pagina: str) -> None:
             st.session_state.pop("nuevo_adf", None)
             st.rerun()
     with col_ruta:
-        if pagina in ("📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"):
+        if pagina in ("📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📈 Historial de Fallas y Reincidencias", "🧠 Base de conocimiento"):
             if st.button("← Panel RootMine", key="volver_rootmine"):
                 st.session_state.pagina = "🧠 RootMine"
                 st.rerun()
@@ -496,6 +496,7 @@ def main() -> None:
     elif pagina == "📋 Planes de acción": mostrar_planes_accion()
     elif pagina == "📚 Historial": mostrar_historial()
     elif pagina == "📊 Indicadores": mostrar_indicadores()
+    elif pagina == "📈 Historial de Fallas y Reincidencias": mostrar_historial_reincidencias()
     elif pagina == "📦 Gestión de Materiales": mostrar_materiales()
     elif pagina == "🛠️ Seguimiento de trabajos": mostrar_trabajos()
     elif pagina == "✅ Aprobaciones de materiales":
