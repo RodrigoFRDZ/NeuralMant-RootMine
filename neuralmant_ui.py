@@ -410,7 +410,7 @@ def mostrar_identificacion() -> None:
 
 def _opciones_navegacion(usuario, pagina):
     opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
-    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento", "📈 Historial de Fallas y Reincidencias"]
+    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
     if pagina in ["🧠 RootMine", *rootmine]:
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
@@ -485,7 +485,6 @@ def main() -> None:
     pagina = mostrar_menu()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
-    mostrar_aviso_materiales(st.session_state.usuario_actual)
     eleccion_materiales = st.session_state.pop("mat_eleccion_vista", False)
     if pagina == "📦 Gestión de Materiales" and st.session_state.get("_pagina_renderizada") != pagina and not st.session_state.get("mat_solicitud_enlace") and not eleccion_materiales:
         st.session_state["mat_vista"] = None
@@ -503,7 +502,6 @@ def main() -> None:
         st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
         mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
-    elif pagina == "📈 Historial de Fallas y Reincidencias": mostrar_historial_reincidencias()
     elif pagina == "🔒 Mi Gestión":
         if not gestion_autorizado(st.session_state.usuario_actual):
             st.error("Acceso no autorizado.")

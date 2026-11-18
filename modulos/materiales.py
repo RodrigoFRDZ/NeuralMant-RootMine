@@ -8,6 +8,7 @@ from uuid import uuid4
 from functools import partial
 import hashlib
 import streamlit as st
+from modulos.notificaciones import mostrar_aviso_materiales
 from database.usuarios import cargar_usuarios, cargar_centros
 from database.materiales import (PERFILES, ESTADOS, candidatos, criticidad, impacto,
                                 guardar, listar, decidir, puede_actuar, mrp_pendiente, exportar_mrp, recuperar_lote_mrp,
@@ -560,6 +561,7 @@ def _seguimiento(u, registros):
 
 
 def mostrar_materiales():
+    mostrar_aviso_materiales(st.session_state.usuario_actual)
     _limpiar_formulario_enviado()
     u = st.session_state.get("usuario_actual") or {}
     if not u.get("correo"):

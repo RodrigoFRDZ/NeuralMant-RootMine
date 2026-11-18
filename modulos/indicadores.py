@@ -303,6 +303,15 @@ def _panel_modos_falla(registros) -> None:
 
 
 def mostrar_indicadores() -> None:
+    vista_indicadores, vista_historial = st.tabs(["📊 Indicadores generales", "📈 Historial de fallas y reincidencias"])
+    with vista_historial:
+        from modulos.historial_reincidencias import mostrar_historial_reincidencias
+        mostrar_historial_reincidencias()
+    with vista_indicadores:
+        _mostrar_indicadores_generales()
+
+
+def _mostrar_indicadores_generales() -> None:
     registros = listar_adf()
     st.markdown('<div class="hero"><div class="eyebrow">NEURALMANT ANALYTICS</div><h1>Indicadores RootMine</h1><p>Vista ejecutiva de impacto, validaciones y cumplimiento de planes de acción.</p></div>', unsafe_allow_html=True)
     if not registros:
