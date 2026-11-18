@@ -13,6 +13,7 @@ from database.sesiones import crear_sesion, validar_y_tocar_sesion, cerrar_sesio
 from ia.cliente import obtener_configuracion
 from modulos.acerca import mostrar_acerca
 from modulos.historial import mostrar_historial
+from modulos.historial_reincidencias import mostrar_historial_reincidencias
 from modulos.base_conocimiento import mostrar_base_conocimiento
 from modulos.indicadores import mostrar_indicadores
 from modulos.planes_accion import mostrar_planes_accion
@@ -409,7 +410,7 @@ def mostrar_identificacion() -> None:
 
 def _opciones_navegacion(usuario, pagina):
     opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
-    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
+    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento", "📈 Historial de Fallas y Reincidencias"]
     if pagina in ["🧠 RootMine", *rootmine]:
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
@@ -502,6 +503,7 @@ def main() -> None:
         st.session_state["mat_vista"] = "Seguimiento y aprobaciones"
         mostrar_materiales()
     elif pagina == "🧠 Base de conocimiento": mostrar_base_conocimiento()
+    elif pagina == "📈 Historial de Fallas y Reincidencias": mostrar_historial_reincidencias()
     elif pagina == "🔒 Mi Gestión":
         if not gestion_autorizado(st.session_state.usuario_actual):
             st.error("Acceso no autorizado.")

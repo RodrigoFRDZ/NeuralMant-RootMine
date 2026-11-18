@@ -1,4 +1,5 @@
 import streamlit as st
+from modulos.historial_reincidencias import mostrar_importacion_historial
 
 from database.llaves_acceso import eliminar_llave, tiene_llave, requiere_llave
 from database.repositorio_adf import listar_adf, eliminar_adf_completo, listar_borradores_globales, reasignar_borrador_adf
@@ -62,7 +63,10 @@ def mostrar_administracion() -> None:
     c2.metric("Activas", activos)
     c3.metric("Validadores activos", validadores)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves", "🗑️ Administrar ADF", "🔄 Reasignar borradores"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["➕ Crear cuenta", "✏️ Editar / eliminar", "🔐 Restablecer llaves", "🗑️ Administrar ADF", "🔄 Reasignar borradores", "📈 Importar historial SAP"])
+
+    with tab6:
+        mostrar_importacion_historial()
 
     with tab1:
         st.subheader("Nueva cuenta")
@@ -428,3 +432,6 @@ def mostrar_administracion() -> None:
                     except Exception as exc:
                         st.error(str(exc))
 
+
+
+# Importación restringida al panel de administración.
