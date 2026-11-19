@@ -36,6 +36,25 @@ def _causa_resumen(registro) -> str:
     return efecto[:70] + ("…" if len(efecto) > 70 else "") if efecto else "Pendiente de conclusión"
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _conteo_aprobaciones_suite(correo, rol, centro, es_admin):
+    """Contadores del usuario, no notificaciones leídas ni solicitudes globales."""
+    from database.materiales import listar, puede_actuar
+    usuario = {"correo": correo, "rol": rol, "centro": centro, "es_admin": es_admin}
+    adf = 0
+    materiales = 0
+    try:
+        if rol in {"supervisor", "jefe", "ingeniero", "subgerente"}:
+            adf = contar_pendientes(correo, rol, centro)
+    except Exception:
+        pass  # La tarjeta debe seguir disponible ante una falla temporal de la consulta.
+    try:
+        materiales = sum(1 for solicitud in listar(correo) if puede_actuar(solicitud, usuario))
+    except Exception:
+        pass
+    return adf, materiales
+
+
 def _modulos_inicio(usuario):
     st.markdown("""<style>
     .st-key-suite_modulo_rootmine, .st-key-suite_modulo_materiales, .st-key-suite_modulo_trabajos, .st-key-suite_modulo_mi_gestion {
@@ -48,6 +67,11 @@ def _modulos_inicio(usuario):
     .suite-module .module-category {color:var(--rm-orange2,#ff9a3d);font-size:.75rem;letter-spacing:.08em;margin:0 0 16px;}
     .suite-module h3 {color:var(--rm-text,#f5f7fa);font-size:1.6rem;line-height:1.3;margin:0 0 12px;min-height:42px;}
     .suite-module p {color:var(--rm-text,#f5f7fa);opacity:.85;font-size:.95rem;line-height:1.6;margin:0;}
+    .suite-notif-badge{position:absolute;top:12px;right:12px;background:#ed354b;
+      color:#fff!important;border-radius:999px;min-width:27px;height:27px;
+      display:flex;align-items:center;justify-content:center;padding:0 7px;
+      font-size:.82rem;font-weight:800;box-shadow:0 2px 10px rgba(237,53,75,.4);}
+    .suite-module{position:relative;}
     @media(max-width:900px) {.suite-module {min-height:205px;}}
     </style>""", unsafe_allow_html=True)
     modulos = [
@@ -57,10 +81,21 @@ def _modulos_inicio(usuario):
     ]
     if gestion_autorizado(usuario):
         modulos.append(("Mi Gestión", "ESPACIO PERSONAL PRIVADO", "Organiza objetivos, compromisos, avances y resultados de tus mejoras.", "🔒 Mi Gestión", "mi_gestion"))
+    correo = str(usuario.get("correo") or "").strip().lower()
+    rol = str(usuario.get("rol") or "").strip().lower()
+    centro = str(usuario.get("centro") or "")
+    adf_pendientes, mat_pendientes = (
+        _conteo_aprobaciones_suite(correo, rol, centro, bool(usuario.get("es_admin")))
+        if correo else (0, 0)
+    )
+    conteos = {"rootmine": adf_pendientes, "materiales": mat_pendientes}
     columnas = st.columns(len(modulos))
     for col, (titulo, categoria, descripcion, pagina, clave) in zip(columnas, modulos):
         with col, st.container(border=True, key="suite_modulo_"+clave):
-            st.markdown(f'<div class="suite-module"><div class="module-category">{categoria}</div>'
+            pendientes = conteos.get(clave, 0)
+            insignia = (f'<span class="suite-notif-badge" title="{pendientes} aprobaciones pendientes">'
+                        f'{"99+" if pendientes > 99 else pendientes}</span>') if pendientes else ""
+            st.markdown(f'<div class="suite-module">{insignia}<div class="module-category">{categoria}</div>'
                         f'<h3>{titulo}</h3><p>{descripcion}</p></div>', unsafe_allow_html=True)
             if st.button("Entrar a "+titulo+" →", key="dash_"+clave, use_container_width=True):
                 st.session_state.pagina = pagina
