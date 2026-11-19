@@ -27,6 +27,10 @@ def _fecha(valor):
 
 
 def estado_calculado(accion: dict) -> str:
+    if accion.get("eliminado_administrador"):
+        return "Eliminado (archivado)"
+    if accion.get("estado_administrativo") == "Cancelado":
+        return "Cancelado"
     if accion.get("estado_respaldo") == "Requiere corrección":
         return "Requiere corrección"
     estado = (accion.get("estado_ejecucion") or "Pendiente").strip()
@@ -264,11 +268,16 @@ def mostrar_planes_accion() -> None:
         st.info("Aún no existen planes de acción registrados.")
         return
 
+    usuario = st.session_state.get("usuario_actual") or {}
+    es_admin = usuario.get("es_admin") is True
+
     # Exportación general: no depende de filtros de pantalla.
     filas = []
     for adf, acciones in con_planes:
         for numero, accion in enumerate(acciones, 1):
             ac = accion if isinstance(accion, dict) else {"accion": str(accion)}
+            if ac.get("estado_administrativo") == "Cancelado" or ac.get("eliminado_administrador"):
+                continue
             estado_raw = str(ac.get("estado_ejecucion") or "Pendiente").strip().lower()
             if estado_raw in {"ejecutado", "ejecutado verificado", "completado", "cerrado", "anulado"}:
                 continue
@@ -305,7 +314,7 @@ def mostrar_planes_accion() -> None:
     st.info("💡 Para una OT SAP, sube una captura donde se vea el encabezado/texto breve, Status de usuario y Fecha fin extrema. Si el Status contiene **CTEC + NOTI**, RootMine lo usa como señal fuerte de ejecución, pero también valida que la OT sea coherente con el plan. Para trabajos físicos puedes subir fotos **Antes** y **Después**.")
 
     filtro_recibido = st.session_state.pop("filtro_planes_desde_indicadores", None)
-    opciones_estado = ["Todos", "Atrasados", "Por vencer", "Pendientes de respaldo", "Requiere corrección", "Ejecutados"]
+    opciones_estado = ["Todos", "Atrasados", "Por vencer", "Pendientes de respaldo", "Requiere corrección", "Ejecutados"] + (["Cancelados", "Eliminados (archivo)"] if es_admin else [])
     estado_inicial = filtro_recibido if filtro_recibido in opciones_estado else "Todos"
     f1, f2 = st.columns([1, 1])
     area_f = f1.selectbox("Área", ["Todas"] + sorted({a.area for a, _ in con_planes if a.area}))
@@ -321,13 +330,18 @@ def mostrar_planes_accion() -> None:
         for idx, ac in enumerate(plan):
             ad = ac if isinstance(ac, dict) else {"accion": str(ac)}
             estado = estado_calculado(ad)
+            inactivo = estado in {"Cancelado", "Eliminado (archivado)"}
             coincide = (
+                (estado_f == "Cancelados" and es_admin and estado == "Cancelado")
+                or (estado_f == "Eliminados (archivo)" and es_admin and estado == "Eliminado (archivado)")
+                or (not inactivo and (
                 estado_f == "Todos"
                 or (estado_f == "Atrasados" and estado == "Atrasado")
                 or (estado_f == "Por vencer" and estado == "Por vencer")
                 or (estado_f == "Ejecutados" and estado == "Ejecutado")
                 or (estado_f == "Requiere corrección" and estado == "Requiere corrección")
                 or (estado_f == "Pendientes de respaldo" and ad.get("estado_ejecucion") != "Ejecutado verificado")
+                ))
             )
             if coincide:
                 plan_filtrado.append((idx, ad))
@@ -347,6 +361,54 @@ def mostrar_planes_accion() -> None:
                 if isinstance(rev, dict) and rev.get("confianza") is not None:
                     confianza_texto = f" · Respaldo {rev['confianza']}%"
                 with st.expander(f"{i+1}. {titulo} · {estado}{confianza_texto}", expanded=False):
+                    if es_admin:
+                        with st.expander("🛡️ Administración del plan (solo administrador)"):
+                            if accion.get("estado_administrativo") == "Cancelado" or accion.get("eliminado_administrador"):
+                                st.warning(f"Estado: {estado_calculado(accion)}")
+                                for evento in accion.get("auditoria_administrativa", []):
+                                    st.caption(f"{evento.get('fecha','')} · {evento.get('accion','')} · {evento.get('motivo','')}")
+                            else:
+                                operacion = st.radio(
+                                    "Acción administrativa",
+                                    ["Cancelar con justificación", "Eliminar (archivar y ocultar)"],
+                                    horizontal=True, key=f"adm_tipo_{adf.id}_{i}",
+                                )
+                                motivos = (["Imposibilidad técnica", "Restricción operacional",
+                                            "Falta de factibilidad económica", "Acción reemplazada",
+                                            "Otro"] if operacion.startswith("Cancelar") else
+                                           ["Plan duplicado", "Creado por error", "Otro"])
+                                motivo = st.selectbox("Motivo obligatorio", motivos, key=f"adm_motivo_{adf.id}_{i}")
+                                justificacion = st.text_area(
+                                    "Justificación obligatoria", key=f"adm_just_{adf.id}_{i}",
+                                    placeholder="Indica por qué no se realizará o por qué corresponde archivarlo.",
+                                )
+                                confirmacion = st.checkbox(
+                                    "Confirmo que soy administrador y que esta acción quedará registrada",
+                                    key=f"adm_confirm_{adf.id}_{i}",
+                                )
+                                if st.button("Confirmar acción administrativa", type="secondary",
+                                             disabled=not (confirmacion and justificacion.strip()),
+                                             key=f"adm_apply_{adf.id}_{i}"):
+                                    # Volver a comprobar el rol en el momento de persistir.
+                                    actual = st.session_state.get("usuario_actual") or {}
+                                    if actual.get("es_admin") is not True:
+                                        st.error("Operación restringida al administrador.")
+                                    else:
+                                        marca = datetime.now().astimezone().isoformat()
+                                        es_cancelacion = operacion.startswith("Cancelar")
+                                        accion["estado_administrativo"] = "Cancelado" if es_cancelacion else "Eliminado"
+                                        accion["eliminado_administrador"] = not es_cancelacion
+                                        accion.setdefault("auditoria_administrativa", []).append({
+                                            "fecha": marca, "accion": "Cancelación" if es_cancelacion else "Eliminación lógica",
+                                            "motivo": motivo, "justificacion": justificacion.strip(),
+                                            "usuario": str(actual.get("correo") or actual.get("email") or actual.get("nombre") or "Administrador"),
+                                        })
+                                        actualizar_plan_prevencion(adf.id, plan)
+                                        st.success("Plan actualizado con registro de auditoría.")
+                                        st.rerun()
+                    if accion.get("estado_administrativo") == "Cancelado" or accion.get("eliminado_administrador"):
+                        st.info("Este plan se conserva para trazabilidad. No se puede editar su ejecución.")
+                        continue
                     st.write(f"**Objetivo:** {accion.get('objetivo','—')}")
                     st.write(f"**Relación con la causa:** {accion.get('relacion_con_causa','—')}")
                     c1, c2, c3 = st.columns(3)
