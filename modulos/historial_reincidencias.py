@@ -105,23 +105,75 @@ def _texto_adf(eventos):
         'La similitud es preliminar y no constituye una causa raíz confirmada.')
 
 
-def _timeline(eventos):
+def _timeline(eventos, minimo=3):
+    """Cronología de patrones, nunca un volcado de avisos individuales."""
+    patrones = sorted(
+        [(ev[0].fecha, ev) for _, ev in _patrones(eventos) if len(ev) >= minimo],
+        key=lambda x: x[0],
+    )
     st.markdown("""<style>
-    .hf-line{border-left:3px solid #418dbb;margin-left:13px;padding:4px 0 4px 20px}
-    .hf-event{background:rgba(110,145,170,.10);border:1px solid rgba(130,150,170,.23);border-radius:12px;padding:12px 15px;margin:0 0 13px;position:relative}
-    .hf-event:before{content:'';position:absolute;left:-29px;top:17px;width:13px;height:13px;border-radius:50%;background:#55a6dc;border:3px solid #202830}
-    .hf-date{font-weight:700;color:#75bee9;font-size:.88rem}
-    .hf-title{font-weight:700;margin:5px 0}.hf-desc{line-height:1.55;color:inherit}
+    .hf-v10-line{border-left:3px solid #4f93bf;margin:18px 0 0 18px;padding:0 0 1px 25px}
+    .hf-v10-card{border:1px solid rgba(140,160,175,.27);border-left:5px solid var(--hito);
+       background:rgba(110,145,170,.10);border-radius:13px;padding:16px 19px;
+       margin:0 0 12px;position:relative}
+    .hf-v10-card:before{content:'';position:absolute;left:-38px;top:17px;
+       width:16px;height:16px;border-radius:50%;background:var(--hito);
+       border:3px solid #20252c}
+    .hf-v10-date{font-weight:700;font-size:.86rem;color:#91c9e9}
+    .hf-v10-name{font-size:1.08rem;font-weight:750;margin:7px 0}
+    .hf-v10-text{line-height:1.55}
+    .hf-v10-pill{display:inline-block;border:1px solid var(--hito);
+       padding:3px 9px;border-radius:99px;font-size:.8rem;margin:8px 7px 0 0}
     </style>""",unsafe_allow_html=True)
-    for e in sorted(eventos,key=lambda x:(x.fecha,x.aviso),reverse=True):
-        st.markdown('<div class="hf-line"><div class="hf-event">'
-            f'<div class="hf-date">{e.fecha:%d/%m/%Y} · {float(e.tp_min or 0):g} min TP</div>'
-            f'<div class="hf-title">{html.escape(str(e.equipo_nombre or e.equipo_codigo))} · Aviso {html.escape(str(e.aviso))}</div>'
-            f'<div class="hf-desc">{html.escape(_resumen(e))}</div>'
+    if not patrones:
+        st.info(f'No hay patrones con {minimo} o más avisos similares para estos filtros.')
+        return
+    total_avisos = sum(len(ev) for _,ev in patrones)
+    tp_total = sum(max(0,float(e.tp_min or 0)) for _,ev in patrones for e in ev)
+    c1,c2,c3=st.columns(3)
+    c1.metric('Patrones relevantes',len(patrones))
+    c2.metric('Avisos agrupados',total_avisos)
+    c3.metric('TP acumulado',f'{tp_total:,.1f} min')
+    st.caption('Agrupación preliminar por equipo y modo de falla. '
+               'No implica causa raíz común confirmada.')
+    for i,(_, ev) in enumerate(patrones):
+        primero,ultimo=ev[0],ev[-1]
+        tp=sum(max(0,float(e.tp_min or 0)) for e in ev)
+        lapso=(ultimo.fecha-primero.fecha).days
+        # La clasificación indica la prioridad del patrón, no la gravedad de un aviso individual.
+        color='#D85D55' if len(ev)>=5 else '#E7A33B' if len(ev)>=4 else '#579DD4'
+        etiqueta='Reincidencia prioritaria' if len(ev)>=5 else 'Patrón recurrente' if len(ev)>=4 else 'Posible reincidencia'
+        descripciones=[]
+        for e in ev:
+            texto=' '.join(str(e.descripcion or '').split()).strip(' .')
+            if texto and texto.casefold() not in {d.casefold() for d in descripciones}:
+                descripciones.append(texto)
+        sintomas='; '.join(descripciones[:2]) if descripciones else 'sin descripción de síntoma'
+        if len(sintomas)>180:sintomas=sintomas[:177].rsplit(' ',1)[0]+'…'
+        narrativa=(f'Se registraron {len(ev)} avisos clasificados preliminarmente como '
+                   f'«{ultimo.modo}» en {lapso} días, con {tp:.1f} minutos de TP acumulado. '
+                   f'Entre los síntomas documentados: {sintomas}.')
+        st.markdown(
+            f'<div class="hf-v10-line"><div class="hf-v10-card" style="--hito:{color}">'
+            f'<div class="hf-v10-date">{primero.fecha:%d/%m/%Y} — {ultimo.fecha:%d/%m/%Y}</div>'
+            f'<div class="hf-v10-name">{html.escape(str(ultimo.equipo_nombre or ultimo.equipo_codigo))}'
+            f' · {html.escape(str(ultimo.modo))}</div>'
+            f'<div class="hf-v10-text">{html.escape(narrativa)}</div>'
+            f'<span class="hf-v10-pill">{len(ev)} fallas relacionadas</span>'
+            f'<span class="hf-v10-pill">{tp:.1f} min TP</span>'
+            f'<span class="hf-v10-pill">{etiqueta}</span>'
             '</div></div>',unsafe_allow_html=True)
-        with st.expander(f'Detalles del aviso {e.aviso}'):
-            st.write(e.texto or 'Sin descripción adicional')
-
+        with st.expander(f'Antecedentes de este hito · {len(ev)} avisos',expanded=False):
+            st.caption('Avisos de origen. El texto completo de SAP solo se abre si lo necesitas.')
+            for e in ev:
+                st.markdown(f'**{e.fecha:%d/%m/%Y} · Aviso {e.aviso} · {float(e.tp_min or 0):g} min TP**')
+                st.write(' '.join(str(e.descripcion or 'Sin descripción breve').split()))
+                with st.expander(f'Ver texto SAP · {e.aviso}',expanded=False):
+                    st.write(e.texto or 'No hay texto adicional en SAP.')
+        st.divider()
+    st.info('Análisis preliminar: los grupos comparten equipo y categoría de falla. '
+            'Antes de generar un ADF, revisar los avisos y confirmar que los síntomas '
+            'y condiciones de operación sean realmente comparables.')
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
     st.markdown('#### Efectividad de ADF · Planes completamente ejecutados')
@@ -227,9 +279,11 @@ def mostrar_historial_reincidencias():
     filtrados=_filtros_visuales(avisos)
     t1,t2,t3=st.tabs(['🕒 Línea de tiempo','🎯 Oportunidades ADF','📊 Efectividad ADF'])
     with t1:
-        st.markdown('#### Línea de tiempo de eventos')
-        st.caption('Cada punto representa un aviso real. Incluye también las fallas no repetitivas.')
-        if filtrados:_timeline(filtrados)
+        st.markdown('#### Línea de tiempo · Hitos de fallas recurrentes')
+        st.caption('Cada hito resume un grupo de fallas similares, no un aviso individual.')
+        minimo=st.selectbox('Mínimo de fallas relacionadas por hito',
+                            [3,4,5,2],index=0,key='hf_hitos_min_v10')
+        if filtrados:_timeline(filtrados,minimo)
         else:st.info('No hay eventos para el período y equipo seleccionados.')
     with t2:
         st.markdown('#### TOP 5 · Patrones que requieren análisis')
