@@ -27,6 +27,8 @@ def _fecha(valor):
 
 
 def estado_calculado(accion: dict) -> str:
+    if accion.get("estado_respaldo") == "Requiere corrección":
+        return "Requiere corrección"
     estado = (accion.get("estado_ejecucion") or "Pendiente").strip()
     if estado in {"Ejecutado", "Ejecutado verificado"}:
         return "Ejecutado"
@@ -142,6 +144,27 @@ def _partes_ia(respaldos: list[dict]):
     return salida
 
 
+def _evaluar_respaldo(rev: dict) -> tuple[bool, bool, str]:
+    """(aprobado, con_observacion, texto); confianza no es avance físico."""
+    try:
+        confianza = float(str(rev.get("confianza", "")).replace("%", "").replace(",", "."))
+    except (ValueError, TypeError):
+        return False, False, "No se obtuvo una confianza válida para aprobar el respaldo."
+    confirmado = rev.get("ejecucion_confirmada") is True
+    coherente = rev.get("veredicto") == "Ejecución respaldada"
+    if not confirmado or not coherente:
+        return False, False, "La evidencia no confirma la ejecución o presenta inconsistencias."
+    if confianza <= 50:
+        return False, False, f"Confianza {confianza:g}%: se requiere mejorar la evidencia."
+    if confianza <= 80:
+        partes = rev.get("observaciones") or rev.get("faltantes") or []
+        if isinstance(partes, str): partes = [partes]
+        detalle = "; ".join(str(x) for x in partes if x)
+        return True, True, (f"Respaldo aprobado con observación ({confianza:g}%). "
+                            + (detalle or "Evidencia aceptada con confianza moderada; revisar calidad del respaldo en seguimiento."))
+    return True, False, f"Respaldo aprobado ({confianza:g}%)."
+
+
 def _mostrar_revision(rev: dict):
     ver = rev.get("veredicto", "—")
     conf = rev.get("confianza", "—")
@@ -151,6 +174,10 @@ def _mostrar_revision(rev: dict):
         st.error(f"❌ {ver} · Confianza {conf}%")
     else:
         st.warning(f"⚠️ {ver} · Confianza {conf}%")
+    if rev.get("aprobado_con_observacion"):
+        st.warning("Respaldo aprobado con observación: " + str(rev.get("observacion_aprobacion", "")))
+    elif rev.get("aprobado"):
+        st.success("Respaldo aprobado")
     st.write(rev.get("resumen", ""))
     c1, c2 = st.columns(2)
     with c1:
@@ -232,7 +259,7 @@ def mostrar_planes_accion() -> None:
     st.info("💡 Para una OT SAP, sube una captura donde se vea el encabezado/texto breve, Status de usuario y Fecha fin extrema. Si el Status contiene **CTEC + NOTI**, RootMine lo usa como señal fuerte de ejecución, pero también valida que la OT sea coherente con el plan. Para trabajos físicos puedes subir fotos **Antes** y **Después**.")
 
     filtro_recibido = st.session_state.pop("filtro_planes_desde_indicadores", None)
-    opciones_estado = ["Todos", "Atrasados", "Por vencer", "Pendientes de respaldo", "Ejecutados"]
+    opciones_estado = ["Todos", "Atrasados", "Por vencer", "Pendientes de respaldo", "Requiere corrección", "Ejecutados"]
     estado_inicial = filtro_recibido if filtro_recibido in opciones_estado else "Todos"
     f1, f2 = st.columns([1, 1])
     area_f = f1.selectbox("Área", ["Todas"] + sorted({a.area for a, _ in con_planes if a.area}))
@@ -253,6 +280,7 @@ def mostrar_planes_accion() -> None:
                 or (estado_f == "Atrasados" and estado == "Atrasado")
                 or (estado_f == "Por vencer" and estado == "Por vencer")
                 or (estado_f == "Ejecutados" and estado == "Ejecutado")
+                or (estado_f == "Requiere corrección" and estado == "Requiere corrección")
                 or (estado_f == "Pendientes de respaldo" and ad.get("estado_ejecucion") != "Ejecutado verificado")
             )
             if coincide:
@@ -278,6 +306,9 @@ def mostrar_planes_accion() -> None:
                     c3.metric("Estado actual", estado_calculado(accion))
                     if accion.get("estado_ejecucion") == "Ejecutado verificado":
                         c3.success("Ejecución verificada por respaldo")
+                    elif accion.get("estado_respaldo") == "Requiere corrección":
+                        c3.warning("Respaldo rechazado: necesita corrección y nueva revisión")
+                        st.warning("**Pendiente de corrección:** " + str(accion.get("solicitud_correccion") or "Complementar evidencia de ejecución."))
                     else:
                         c3.caption("El estado Ejecutado se obtiene tras revisar evidencia con IA.")
 
@@ -388,12 +419,34 @@ Si corresponde a POEV o LUP, valida que el documento presentado corresponda real
                                 with st.spinner("GearBot está leyendo la OT y/o comparando la evidencia fotográfica..."):
                                     rev = revisar_evidencia_plan(contexto, imagenes=_partes_ia(nuevos))
                                 rev_dict = rev.model_dump()
+                                aprobado, condicionado, observacion_aprobacion = _evaluar_respaldo(rev_dict)
+                                rev_dict["aprobado"] = aprobado
+                                rev_dict["aprobado_con_observacion"] = condicionado
+                                rev_dict["observacion_aprobacion"] = observacion_aprobacion
+                                anterior = accion.get("revision_ia")
+                                if isinstance(anterior, dict):
+                                    historial = accion.get("historial_revision_ia")
+                                    if not isinstance(historial, list):
+                                        historial = []
+                                    historial.append(anterior)
+                                    accion["historial_revision_ia"] = historial[-20:]
                                 accion["revision_ia"] = rev_dict
-                                if rev.ejecucion_confirmada and rev.veredicto == "Ejecución respaldada":
+                                if aprobado:
+                                    accion["estado_respaldo"] = ("Aprobado con observación" if condicionado else "Aprobado")
+                                    accion.pop("solicitud_correccion", None)
                                     accion["estado_ejecucion"] = "Ejecutado verificado"
                                     accion["fecha_ejecucion"] = rev.fecha_ejecucion_estimada or date.today().isoformat()
                                 else:
                                     accion["estado_ejecucion"] = "Pendiente"
+                                    accion["estado_respaldo"] = "Requiere corrección"
+                                    accion.pop("fecha_ejecucion", None)
+                                    detalle = str(rev_dict.get("observacion_aprobacion") or "").strip()
+                                    faltantes = rev_dict.get("faltantes") or rev_dict.get("observaciones") or []
+                                    if isinstance(faltantes, str):
+                                        faltantes = [faltantes]
+                                    if isinstance(faltantes, list) and faltantes:
+                                        detalle += " | " + "; ".join(str(x) for x in faltantes if x)
+                                    accion["solicitud_correccion"] = detalle or "Adjuntar evidencia adicional que permita verificar la ejecución."
                                 # Compatibilidad: poblar campos históricos solo desde lo detectado por IA.
                                 accion["noti_sap"] = rev.noti_detectada
                                 accion["status_usuario_sap"] = rev.status_usuario_detectado
@@ -403,7 +456,11 @@ Si corresponde a POEV o LUP, valida que el documento presentado corresponda real
                                 accion["encabezado_orden_detectado"] = rev.encabezado_orden or rev.descripcion_orden
                                 actualizar_plan_prevencion(adf.id, plan)
                                 _mostrar_revision(rev_dict)
-                                st.success("Revisión guardada en el historial del plan.")
+                                if aprobado:
+                                    st.success("Respaldo aprobado. Plan verificado y disponible para seguimiento de efectividad.")
+                                else:
+                                    st.error("Respaldo no aprobado. El plan permanece pendiente y se muestra en Requiere corrección.")
+                                    st.warning(accion["solicitud_correccion"])
                             except Exception as exc:
                                 amigable = mensaje_amigable_ia(exc)
                                 if amigable:
@@ -423,5 +480,8 @@ Si corresponde a POEV o LUP, valida que el documento presentado corresponda real
                             "respaldos": nuevos,
                         })
                         actualizar_plan_prevencion(adf.id, plan)
-                        st.success("Seguimiento guardado.")
+                        if accion.get("estado_respaldo") == "Requiere corrección":
+                            st.warning("Evidencia complementaria guardada sin aprobar el plan. Pulsa Analizar respaldos para solicitar una nueva evaluación.")
+                        else:
+                            st.success("Seguimiento guardado.")
                         st.rerun()

@@ -124,7 +124,7 @@ def _timeline(eventos):
 
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
-    st.markdown('#### Efectividad de ADF · Seguimiento de acciones verificadas')
+    st.markdown('#### Efectividad de ADF · Planes completamente ejecutados')
     st.caption('La información se lee directamente desde los planes existentes. No es necesario volver a cargar fechas ni evidencias.')
     visibles=0
     excluidos={'sin_planes':0,'pendientes':0,'sin_vinculo':0,'sin_fecha':0}
@@ -132,23 +132,19 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         planes=_planes(adf)
         if not planes:
             excluidos['sin_planes']+=1;continue
-        # Una revisión IA con confianza 50-80 % no equivale a ejecución verificada.
-        # Se muestra como caso en revisión, pero no inicia el cómputo de efectividad.
+        # Solo planes totalmente ejecutados y con respaldo aprobado.
+        # Los aprobados con observación son elegibles: el resultado se revisa
+        # con especial atención a la evidencia de calidad moderada.
         pendientes=[p for p in planes if p.get('estado_ejecucion')!='Ejecutado verificado']
         if pendientes:
             excluidos['pendientes']+=1
-            revisiones=[]
-            for p in pendientes:
-                rev=p.get('revision_ia') or {}
-                confianza=rev.get('confianza') if isinstance(rev,dict) else None
-                revisiones.append((str(p.get('titulo') or p.get('descripcion') or 'Plan pendiente'), confianza))
-            st.markdown(f'**ADF #{adf.id} · {adf.equipo} — Pendiente de validación**')
-            st.warning(f'{len(pendientes)} de {len(planes)} planes aún no están ejecutados y verificados. '
-                       'Este ADF se muestra para revisión, pero no se declara efectivo.')
-            for nombre, confianza in revisiones:
-                st.caption(f'{nombre} · Confianza de revisión IA: {confianza if confianza is not None else "sin dato"}')
-            st.divider()
             continue
+        observados=[]
+        for p in planes:
+            rev=p.get('revision_ia') or {}
+            if isinstance(rev,dict) and rev.get('aprobado_con_observacion'):
+                observados.append((p.get('titulo') or p.get('descripcion') or 'Plan',
+                                   rev.get('observacion_aprobacion') or 'Aprobación con observación'))
         origen=[e for e in avisos if e.aviso in _avisos_adf(adf)]
         if not origen:
             excluidos['sin_vinculo']+=1;continue
@@ -168,6 +164,11 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         st.markdown(f'**ADF #{adf.id} · {adf.equipo} · {", ".join(sorted(modos))}**')
         st.progress(min(1.,dias/max(plazo,1)))
         st.caption(f'{dias} / {plazo} días observados · {max(0,plazo-dias)} restantes · Confianza {confianza}')
+        if observados:
+            st.warning(f'{len(observados)} plan(es) aprobado(s) con observaciones. '
+                       'La ejecución está completa; revisar estas observaciones al evaluar reincidencias.')
+            with st.expander('Observaciones de respaldos aprobados'):
+                for nombre, nota in observados:st.write(f'**{nombre}:** {nota}')
         if posteriores:
             st.error(f'{len(posteriores)} posible(s) reincidencia(s) detectada(s): revisar que correspondan a la misma causa.')
             with st.expander('Revisar nuevos antecedentes'):
@@ -181,7 +182,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         with st.expander('Fundamento del plazo'):st.write(razon)
         st.divider()
     if not visibles:st.info('No hay ADF elegibles con los filtros seleccionados.')
-    with st.expander('Diagnóstico: ¿por qué no aparece un ADF?'):
+    with st.expander('Diagnóstico de ADF no elegibles'):
         st.write(f'ADF con planes aún sin ejecutar/verificar: {excluidos["pendientes"]}')
         st.write(f'ADF sin planes estructurados: {excluidos["sin_planes"]}')
         st.write(f'ADF sin aviso SAP coincidente: {excluidos["sin_vinculo"]}')
