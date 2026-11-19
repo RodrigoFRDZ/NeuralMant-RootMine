@@ -2,6 +2,8 @@
 from __future__ import annotations
 import datetime as dt
 import re
+import json
+from pathlib import Path
 import unicodedata
 from collections import defaultdict
 from sqlalchemy import String, Integer, Float, Date, DateTime, Text, select, func
@@ -90,6 +92,16 @@ def fecha_excel(v):
         except ValueError:pass
     raise ValueError('Fecha no reconocida')
 
+def area_por_ceco(centro):
+    """Mapeo mantenido desde el archivo Datos por CeCo. Sin coincidencia no se inventa área."""
+    archivo = Path(__file__).with_name('centros_costo_areas.json')
+    try:
+        with archivo.open(encoding='utf-8') as f:
+            tabla = json.load(f)
+    except (OSError, ValueError):
+        return 'Sin área asignada'
+    return tabla.get(str(centro or '').strip().upper(), 'Sin área asignada')
+
 def procesar_excel(archivo, responsable, confirmar=False):
     # El archivo se lee en memoria y nunca se escribe a disco.
     from openpyxl import load_workbook
@@ -104,7 +116,7 @@ def procesar_excel(archivo, responsable, confirmar=False):
     cols={k:idx(k) for k in ['Notificación','Fe.notif.','Equipo','Indicador ABC','Duración parada','Unidad','Ubicac.técnica']}
     nombre_equipo=idx('Descripción',1)
     desc_aviso=idx('Descripción',0)
-    area_idx=idx('Descripción',2)
+    ceco_idx=idx('Centro coste')
     orden_idx=idx('Orden')
     texto_idx=idx('Texto completo del aviso')
     registros={};errores=[]
@@ -120,7 +132,7 @@ def procesar_excel(archivo, responsable, confirmar=False):
             else:raise ValueError(f'Unidad TP desconocida: {unidad}')
             desc=str(fila[desc_aviso] or '')
             texto=str(fila[texto_idx] or '')
-            registros[aviso]=dict(aviso=aviso,orden=str(fila[orden_idx] or ''),fecha=fecha_excel(fila[cols['Fe.notif.']]),equipo_codigo=str(fila[cols['Equipo']] or ''),equipo_nombre=str(fila[nombre_equipo] or ''),area=str(fila[area_idx] or 'Sin área'),ubicacion=str(fila[cols['Ubicac.técnica']] or ''),descripcion=desc,texto=texto,tp_min=round(dur,2),modo=clasificar(desc+' '+texto))
+            registros[aviso]=dict(aviso=aviso,orden=str(fila[orden_idx] or ''),fecha=fecha_excel(fila[cols['Fe.notif.']]),equipo_codigo=str(fila[cols['Equipo']] or ''),equipo_nombre=str(fila[nombre_equipo] or ''),area=area_por_ceco(fila[ceco_idx]),ubicacion=str(fila[cols['Ubicac.técnica']] or ''),descripcion=desc,texto=texto,tp_min=round(dur,2),modo=clasificar(desc+' '+texto))
         except Exception as e:errores.append(f'Fila {numero}: {e}')
     libro.close()
     if not confirmar:return dict(registros=len(registros),rechazados=len(errores),errores=errores[:20])

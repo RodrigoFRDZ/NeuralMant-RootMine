@@ -105,42 +105,22 @@ def _texto_adf(eventos):
         'La similitud es preliminar y no constituye una causa raíz confirmada.')
 
 
-def _timeline(eventos, minimo=3):
-    """Hitos por equipo y modo, respaldados por al menos `minimo` avisos."""
-    patrones = sorted(
-        [(ev[0].fecha, ev) for _, ev in _patrones(eventos) if len(ev) >= minimo],
-        key=lambda item: item[0],
-    )
+def _timeline(eventos):
     st.markdown("""<style>
-    .hf-history{border-left:3px solid #4c9ed1;margin-left:17px;padding:2px 0 2px 23px}
-    .hf-hito{background:rgba(110,145,170,.10);border:1px solid rgba(130,150,170,.25);
-       border-radius:14px;padding:16px;margin:0 0 17px;position:relative}
-    .hf-hito:before{content:'';position:absolute;left:-34px;top:20px;width:15px;height:15px;
-       border-radius:50%;background:#ed873e;border:3px solid #252a30}
-    .hf-fecha{font-size:.88rem;font-weight:700;color:#78c1ee}
-    .hf-titulo{font-weight:700;font-size:1.05rem;margin:7px 0}
-    .hf-texto{line-height:1.5}
-    </style>""", unsafe_allow_html=True)
-    if not patrones:
-        st.info(f"No se identificaron modos de falla con {minimo} o más avisos similares en este período.")
-        return
-    for _, ev in patrones:
-        primero, ultimo = ev[0], ev[-1]
-        tp = sum(max(0, float(x.tp_min or 0)) for x in ev)
-        texto = (f"Entre el {primero.fecha:%d/%m/%Y} y el {ultimo.fecha:%d/%m/%Y} "
-                 f"se registraron {len(ev)} eventos relacionados con «{ultimo.modo}», "
-                 f"acumulando {tp:.0f} minutos de tiempo perdido. "
-                 f"Síntoma registrado: {_resumen(ev[0])}")
-        st.markdown(
-            '<div class="hf-history"><div class="hf-hito">'
-            f'<div class="hf-fecha">{primero.fecha:%d/%m/%Y} — {ultimo.fecha:%d/%m/%Y}</div>'
-            f'<div class="hf-titulo">{html.escape(str(ultimo.equipo_nombre))} · {html.escape(str(ultimo.modo))}</div>'
-            f'<div class="hf-texto">{html.escape(texto)}</div>'
-            '</div></div>', unsafe_allow_html=True)
-        with st.expander(f"Ver los {len(ev)} avisos que respaldan este hito"):
-            for e in ev:
-                st.markdown(f"**{e.fecha:%d/%m/%Y} · Aviso {e.aviso} · {e.tp_min:g} min TP**")
-                st.write(_resumen(e))
+    .hf-line{border-left:3px solid #418dbb;margin-left:13px;padding:4px 0 4px 20px}
+    .hf-event{background:rgba(110,145,170,.10);border:1px solid rgba(130,150,170,.23);border-radius:12px;padding:12px 15px;margin:0 0 13px;position:relative}
+    .hf-event:before{content:'';position:absolute;left:-29px;top:17px;width:13px;height:13px;border-radius:50%;background:#55a6dc;border:3px solid #202830}
+    .hf-date{font-weight:700;color:#75bee9;font-size:.88rem}
+    .hf-title{font-weight:700;margin:5px 0}.hf-desc{line-height:1.55;color:inherit}
+    </style>""",unsafe_allow_html=True)
+    for e in sorted(eventos,key=lambda x:(x.fecha,x.aviso),reverse=True):
+        st.markdown('<div class="hf-line"><div class="hf-event">'
+            f'<div class="hf-date">{e.fecha:%d/%m/%Y} · {float(e.tp_min or 0):g} min TP</div>'
+            f'<div class="hf-title">{html.escape(str(e.equipo_nombre or e.equipo_codigo))} · Aviso {html.escape(str(e.aviso))}</div>'
+            f'<div class="hf-desc">{html.escape(_resumen(e))}</div>'
+            '</div></div>',unsafe_allow_html=True)
+        with st.expander(f'Detalles del aviso {e.aviso}'):
+            st.write(e.texto or 'Sin descripción adicional')
 
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
@@ -152,9 +132,23 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         planes=_planes(adf)
         if not planes:
             excluidos['sin_planes']+=1;continue
-        # Estado real de la aplicación: solo "Ejecutado verificado" es un cierre validado.
-        if any(p.get('estado_ejecucion')!='Ejecutado verificado' for p in planes):
-            excluidos['pendientes']+=1;continue
+        # Una revisión IA con confianza 50-80 % no equivale a ejecución verificada.
+        # Se muestra como caso en revisión, pero no inicia el cómputo de efectividad.
+        pendientes=[p for p in planes if p.get('estado_ejecucion')!='Ejecutado verificado']
+        if pendientes:
+            excluidos['pendientes']+=1
+            revisiones=[]
+            for p in pendientes:
+                rev=p.get('revision_ia') or {}
+                confianza=rev.get('confianza') if isinstance(rev,dict) else None
+                revisiones.append((str(p.get('titulo') or p.get('descripcion') or 'Plan pendiente'), confianza))
+            st.markdown(f'**ADF #{adf.id} · {adf.equipo} — Pendiente de validación**')
+            st.warning(f'{len(pendientes)} de {len(planes)} planes aún no están ejecutados y verificados. '
+                       'Este ADF se muestra para revisión, pero no se declara efectivo.')
+            for nombre, confianza in revisiones:
+                st.caption(f'{nombre} · Confianza de revisión IA: {confianza if confianza is not None else "sin dato"}')
+            st.divider()
+            continue
         origen=[e for e in avisos if e.aviso in _avisos_adf(adf)]
         if not origen:
             excluidos['sin_vinculo']+=1;continue
@@ -207,12 +201,9 @@ def mostrar_historial_reincidencias():
     filtrados=_filtros_visuales(avisos)
     t1,t2,t3=st.tabs(['🕒 Línea de tiempo','🎯 Oportunidades ADF','📊 Efectividad ADF'])
     with t1:
-        st.markdown('#### Historia de fallas recurrentes')
-        st.caption('Un hito representa un patrón repetitivo del equipo, no un aviso aislado. '
-                   'Las fallas únicas de alto TP siguen disponibles para análisis ADF por separado.')
-        minimo=st.selectbox('Mínimo de fallas similares para mostrar un hito',
-                            [3,4,5,2],index=0,key='hf_minimo_hitos')
-        if filtrados:_timeline(filtrados,minimo=minimo)
+        st.markdown('#### Línea de tiempo de eventos')
+        st.caption('Cada punto representa un aviso real. Incluye también las fallas no repetitivas.')
+        if filtrados:_timeline(filtrados)
         else:st.info('No hay eventos para el período y equipo seleccionados.')
     with t2:
         st.markdown('#### TOP 5 · Patrones que requieren análisis')
