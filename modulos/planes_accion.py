@@ -210,6 +210,52 @@ def _mostrar_revision(rev: dict):
             st.write(f"• {x}")
 
 
+def _es_creacion_plan_mantenimiento(accion: dict) -> bool:
+    """Solo para compromisos de crear/programar un plan, no de ejecutarlo."""
+    import unicodedata
+    texto = unicodedata.normalize("NFKD", " ".join(str(accion.get(k) or "") for k in ("accion", "objetivo"))).encode("ascii", "ignore").decode().lower()
+    verbos = ("crear", "elaborar", "generar", "disenar", "implementar", "programar")
+    objetos = ("plan de mantenimiento", "pauta de mantenimiento", "hoja de ruta", "plan preventivo")
+    return any(v in texto for v in verbos) and any(o in texto for o in objetos)
+
+
+def _confirmacion_mantenimiento(accion: dict, adf_id: int, indice: int, plan: list):
+    """Seguimiento posterior separado del cumplimiento del ADF."""
+    if accion.get("estado_ejecucion") != "Ejecutado verificado" or not _es_creacion_plan_mantenimiento(accion):
+        return
+    st.markdown("#### 📅 Confirmación posterior del mantenimiento programado")
+    st.caption("La acción ADF fue crear/programar el mantenimiento. Su ejecución futura se controla aparte y NO revierte la aprobación del plan de acción.")
+    conf = accion.get("confirmacion_mantenimiento") or {}
+    if not isinstance(conf, dict):
+        conf = {}
+    fecha = _fecha(conf.get("fecha_programada"))
+    with st.form(f"pa_conf_mant_{adf_id}_{indice}"):
+        fecha_programada = st.date_input("Fecha programada del mantenimiento", value=fecha or date(2026, 12, 12), key=f"pa_prog_{adf_id}_{indice}")
+        ejecutado = st.checkbox("Confirmo que el mantenimiento se ejecutó", value=bool(conf.get("ejecutado")), key=f"pa_ok_{adf_id}_{indice}")
+        ot = st.text_input("OT SAP ejecutada (si corresponde)", value=str(conf.get("ot_sap") or ""), key=f"pa_ot_conf_{adf_id}_{indice}")
+        evidencia = st.text_area("Descripción o evidencia de ejecución", value=str(conf.get("evidencia") or ""), key=f"pa_ev_conf_{adf_id}_{indice}")
+        if st.form_submit_button("Guardar confirmación / programación"):
+            if ejecutado and not (ot.strip() or evidencia.strip()):
+                st.error("Para confirmar la ejecución, ingresa una OT SAP o una descripción verificable.")
+            elif ejecutado and fecha_programada > date.today():
+                st.error("No se puede confirmar como ejecutado un mantenimiento con fecha futura.")
+            else:
+                accion["confirmacion_mantenimiento"] = {
+                    "fecha_programada": fecha_programada.isoformat(),
+                    "ejecutado": ejecutado,
+                    "ot_sap": ot.strip(),
+                    "evidencia": evidencia.strip(),
+                    "fecha_confirmacion": date.today().isoformat() if ejecutado else None,
+                }
+                actualizar_plan_prevencion(adf_id, plan)
+                st.success("Confirmación guardada. No se modificó el estado de aprobación del plan ADF.")
+                st.rerun()
+    if conf.get("ejecutado"):
+        st.success("Mantenimiento posterior confirmado. Este registro no sustituye la verificación de efectividad.")
+    else:
+        st.info("Mantenimiento programado, pendiente de confirmar ejecución. El plan de creación permanece ejecutado.")
+
+
 def mostrar_planes_accion() -> None:
     st.markdown('<div class="hero"><div class="eyebrow">ROOTMINE · SEGUIMIENTO</div><h1>Planes de acción</h1><p>Respalda la ejecución con OT SAP y/o evidencia fotográfica. GearBot interpreta directamente los respaldos.</p></div>', unsafe_allow_html=True)
     registros = listar_adf()
@@ -296,7 +342,11 @@ def mostrar_planes_accion() -> None:
                     plan[i] = accion
                 titulo = accion.get("accion") or f"Acción {i+1}"
                 estado = estado_calculado(accion)
-                with st.expander(f"{i+1}. {titulo} · {estado}", expanded=False):
+                rev = accion.get("revision_ia") or {}
+                confianza_texto = ""
+                if isinstance(rev, dict) and rev.get("confianza") is not None:
+                    confianza_texto = f" · Respaldo {rev['confianza']}%"
+                with st.expander(f"{i+1}. {titulo} · {estado}{confianza_texto}", expanded=False):
                     st.write(f"**Objetivo:** {accion.get('objetivo','—')}")
                     st.write(f"**Relación con la causa:** {accion.get('relacion_con_causa','—')}")
                     c1, c2, c3 = st.columns(3)
@@ -410,6 +460,7 @@ Relación con la causa: {accion.get('relacion_con_causa','')}
 Fecha compromiso: {accion.get('fecha_compromiso') or 'No definida'}
 Contexto adicional del ejecutor: {observacion or 'Sin contexto adicional'}
 
+Evalúa SOLO el entregable comprometido en el plan de acción. Si la acción es CREAR o PROGRAMAR un plan de mantenimiento, valida su creación/programación, NO exijas que se haya ejecutado la primera OT futura. La ejecución posterior se registra separadamente. No supongas que una fecha futura demuestra ejecución.
 Analiza directamente todos los respaldos adjuntos.
 Para capturas SAP verifica encabezado/texto breve, Status de usuario (CTEC + NOTI como señal fuerte), Fecha fin extrema y coherencia de la OT con el plan.
 Para fotos compara ANTES/DESPUÉS cuando existan.
@@ -485,3 +536,4 @@ Si corresponde a POEV o LUP, valida que el documento presentado corresponda real
                         else:
                             st.success("Seguimiento guardado.")
                         st.rerun()
+                    _confirmacion_mantenimiento(accion, adf.id, i, plan)

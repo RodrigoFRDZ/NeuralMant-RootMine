@@ -147,7 +147,14 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                                    rev.get('observacion_aprobacion') or 'Aprobación con observación'))
         origen=[e for e in avisos if e.aviso in _avisos_adf(adf)]
         if not origen:
-            excluidos['sin_vinculo']+=1;continue
+            excluidos['sin_vinculo']+=1
+            st.markdown(f'**ADF #{adf.id} · {adf.equipo} — Planes completos**')
+            st.info('Planes ejecutados y verificados. Falta vincular el aviso SAP de origen para calcular efectividad y reincidencias sin confundir modos de falla.')
+            for ix, p in enumerate(planes, 1):
+                rev=p.get('revision_ia') or {}
+                st.caption(f'Plan {ix} · Confianza respaldo: {rev.get("confianza", "sin dato") if isinstance(rev,dict) else "sin dato"}% · {p.get("estado_respaldo") or "Sin clasificación histórica"}')
+            st.divider()
+            continue
         if not any(e.aviso in {v.aviso for v in filtrados} for e in origen):continue
         inicio=_fecha_ejecucion(planes)
         if not inicio:
@@ -164,6 +171,19 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         st.markdown(f'**ADF #{adf.id} · {adf.equipo} · {", ".join(sorted(modos))}**')
         st.progress(min(1.,dias/max(plazo,1)))
         st.caption(f'{dias} / {plazo} días observados · {max(0,plazo-dias)} restantes · Confianza {confianza}')
+        st.markdown('**Calidad de respaldos de los planes**')
+        for ix, plan in enumerate(planes, 1):
+            rev = plan.get('revision_ia') or {}
+            porcentaje = rev.get('confianza') if isinstance(rev, dict) else None
+            estado_respaldo = plan.get('estado_respaldo') or 'Sin clasificación histórica'
+            st.caption(f'Plan {ix}: {estado_respaldo} · Confianza IA: {porcentaje if porcentaje is not None else "sin dato"}%')
+            conf = plan.get('confirmacion_mantenimiento') or {}
+            if isinstance(conf, dict) and conf.get('fecha_programada'):
+                if conf.get('ejecutado'):
+                    st.success(f'Plan {ix}: ejecución posterior del mantenimiento confirmada (OT: {conf.get("ot_sap") or "sin OT"}).')
+                else:
+                    st.warning(f'Plan {ix}: mantenimiento programado para {conf["fecha_programada"]}, pendiente de confirmar ejecución. La creación del plan ADF ya fue cumplida.')
+
         if observados:
             st.warning(f'{len(observados)} plan(es) aprobado(s) con observaciones. '
                        'La ejecución está completa; revisar estas observaciones al evaluar reincidencias.')
