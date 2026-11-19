@@ -216,6 +216,11 @@ def mostrar_historial_reincidencias():
         st.error('No tienes permisos para consultar el historial.');return
     crear_tablas_historial()
     avisos,adfs,excepciones,seguimientos,ultima=datos()
+    sin_ceco=sum(1 for e in avisos if not getattr(e,'centro_costo',''))
+    if sin_ceco:
+        st.warning(f'{sin_ceco} avisos antiguos no tienen CeCo almacenado. Para clasificarlos por área, vuelve a importar el Excel SAP desde Administración. Hasta entonces figurarán como Sin área asignada.')
+    if any(e.area == 'Sin área asignada' and getattr(e,'centro_costo','') for e in avisos):
+        st.info('Existen centros de costo no incluidos en la tabla de equivalencias; revisa el mapeo de CeCo.')
     st.title('📈 Historial de Fallas y Reincidencias')
     st.caption('Historia de equipos · TOP 5 de patrones repetitivos · Seguimiento ADF')
     st.info(f'Historial SAP actualizado hasta {ultima:%d/%m/%Y}' if ultima else 'Todavía no hay avisos SAP importados.')

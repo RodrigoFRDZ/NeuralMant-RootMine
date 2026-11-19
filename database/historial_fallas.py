@@ -19,6 +19,7 @@ class AvisoFalla(Base):
     equipo_codigo: Mapped[str] = mapped_column(String(80), index=True)
     equipo_nombre: Mapped[str] = mapped_column(String(250), default='')
     area: Mapped[str] = mapped_column(String(120), index=True)
+    centro_costo: Mapped[str] = mapped_column(String(80), default='', index=True)
     ubicacion: Mapped[str] = mapped_column(String(250), default='')
     descripcion: Mapped[str] = mapped_column(Text, default='')
     texto: Mapped[str] = mapped_column(Text, default='')
@@ -60,6 +61,7 @@ def crear_tablas_historial():
     if engine.dialect.name == 'postgresql':
         from sqlalchemy import text
         with engine.begin() as c:
+            c.execute(text("ALTER TABLE historial_aviso_falla ADD COLUMN IF NOT EXISTS centro_costo VARCHAR(80) DEFAULT ''"))
             for tabla in ('historial_aviso_falla','historial_excepcion_adf','historial_seguimiento_adf','historial_importacion'):
                 c.execute(text(f'ALTER TABLE {tabla} ENABLE ROW LEVEL SECURITY'))
 
@@ -132,7 +134,7 @@ def procesar_excel(archivo, responsable, confirmar=False):
             else:raise ValueError(f'Unidad TP desconocida: {unidad}')
             desc=str(fila[desc_aviso] or '')
             texto=str(fila[texto_idx] or '')
-            registros[aviso]=dict(aviso=aviso,orden=str(fila[orden_idx] or ''),fecha=fecha_excel(fila[cols['Fe.notif.']]),equipo_codigo=str(fila[cols['Equipo']] or ''),equipo_nombre=str(fila[nombre_equipo] or ''),area=area_por_ceco(fila[ceco_idx]),ubicacion=str(fila[cols['Ubicac.técnica']] or ''),descripcion=desc,texto=texto,tp_min=round(dur,2),modo=clasificar(desc+' '+texto))
+            registros[aviso]=dict(aviso=aviso,orden=str(fila[orden_idx] or ''),fecha=fecha_excel(fila[cols['Fe.notif.']]),equipo_codigo=str(fila[cols['Equipo']] or ''),equipo_nombre=str(fila[nombre_equipo] or ''),area=area_por_ceco(fila[ceco_idx]),centro_costo=str(fila[ceco_idx] or '').strip().upper(),ubicacion=str(fila[cols['Ubicac.técnica']] or ''),descripcion=desc,texto=texto,tp_min=round(dur,2),modo=clasificar(desc+' '+texto))
         except Exception as e:errores.append(f'Fila {numero}: {e}')
     libro.close()
     if not confirmar:return dict(registros=len(registros),rechazados=len(errores),errores=errores[:20])
@@ -155,6 +157,8 @@ def datos():
         excepciones={x.aviso:x for x in s.scalars(select(ExcepcionADF)).all()}
         seguimientos={x.adf_id:x for x in s.scalars(select(SeguimientoADF)).all()}
         ultima=s.scalar(select(func.max(ImportacionHistorial.max_fecha)))
+        for aviso in avisos:
+            aviso.area = area_por_ceco(aviso.centro_costo) if aviso.centro_costo else 'Sin área asignada'
         return avisos,adfs,excepciones,seguimientos,ultima
 
 def grupos(avisos):
