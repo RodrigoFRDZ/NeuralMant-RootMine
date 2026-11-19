@@ -69,6 +69,87 @@ def _modulos_inicio(usuario):
                 st.rerun()
 
 
+def _panel_administrador_suite(usuario_actual):
+    # Acceso exclusivo del administrador RootMine.
+    if _es_admin_rootmine(usuario_actual):
+        cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
+        with cap_titulo:
+            st.markdown("#### 📡 Capacidad RootMine")
+        with cap_actualizar:
+            if st.button("↻ Actualizar", key="refresh_capacidad", use_container_width=True):
+                dashboard_cache.clear(); uso_ia_cache.clear(); almacenamiento_cache.clear(); st.rerun()
+        uso_ia = uso_ia_cache()
+        limites = limites_configurados()
+        almacenamiento = almacenamiento_cache()
+        modelo_ia = obtener_configuracion().modelo
+
+        cap1, cap2, cap3 = st.columns(3)
+        limite_h = limites.get("hora", 0)
+        limite_d = limites.get("dia", 0)
+
+        cap1.metric(
+            "GearBot · última hora",
+            f"{uso_ia.get('ultima_hora', 0)} / {limite_h if limite_h else '—'}",
+            help="Consultas enviadas por RootMine durante los últimos 60 minutos.",
+        )
+        cap2.metric(
+            "GearBot · hoy",
+            f"{uso_ia.get('hoy', 0)} / {limite_d if limite_d else '—'}",
+            help="Consultas enviadas por RootMine durante el día actual (hora de Chile).",
+        )
+
+        if almacenamiento.get("limite_bytes", 0):
+            usados_mb = mb(almacenamiento.get("usados_bytes", 0))
+            libres_mb = mb(almacenamiento.get("disponibles_bytes", 0))
+            cap3.metric(
+                "Nube Supabase",
+                f"{libres_mb:.1f} MB libres",
+                delta=f"{usados_mb:.1f} MB usados",
+                delta_color="off",
+                help="Uso de la base PostgreSQL operacional de RootMine.",
+            )
+            st.progress(min(1.0, almacenamiento.get("porcentaje", 0) / 100.0))
+            st.caption(
+                f"☁️ Base de datos: {usados_mb:.1f} MB usados de 500 MB · "
+                f"{libres_mb:.1f} MB disponibles. Modelo GearBot: {modelo_ia}."
+            )
+        else:
+            cap3.metric("Base de datos", almacenamiento.get("backend", "No disponible"))
+
+        if not limite_h or not limite_d:
+            st.info(
+                "Para mostrar el porcentaje exacto de cuota de GearBot, configura "
+                "`GEMINI_HOURLY_LIMIT` y `GEMINI_DAILY_LIMIT` en Secrets con los "
+                "límites que muestra Google AI Studio para este proyecto/modelo. "
+                "RootMine ya está contando las consultas automáticamente."
+            )
+        elif limite_h or limite_d:
+            if limite_h:
+                st.progress(min(1.0, uso_ia.get("ultima_hora", 0) / max(1, limite_h)))
+            if limite_d:
+                st.progress(min(1.0, uso_ia.get("hoy", 0) / max(1, limite_d)))
+
+        if uso_ia.get("rechazos_cuota_hoy", 0):
+            st.warning(
+                f"GearBot ha registrado {uso_ia['rechazos_cuota_hoy']} intento(s) "
+                "rechazados por cuota durante el día."
+            )
+
+        st.markdown("#### ⚙️ Administración")
+        adm_col, _ = st.columns([1.05, 3.95])
+        with adm_col:
+            st.markdown(
+                '<div class="action-card admin"><div class="action-icon">👥</div>'
+                '<h3>Administración</h3>'
+                '<p>Crea, edita y elimina cuentas; gestiona roles y restablece llaves de acceso.</p></div>',
+                unsafe_allow_html=True,
+            )
+            if st.button("Administrar cuentas →", type="primary", use_container_width=True, key="dash_admin"):
+                st.session_state.pagina = "👥 Administración de cuentas"
+                st.rerun()
+
+
+
 def mostrar_inicio() -> None:
     usuario = st.session_state.get("usuario_actual") or {}
     nombre = str(usuario.get("nombre") or st.session_state.get("usuario") or "").strip()
@@ -89,6 +170,7 @@ def mostrar_inicio() -> None:
             unsafe_allow_html=True,
         )
     _modulos_inicio(st.session_state.get("usuario_actual") or {})
+    _panel_administrador_suite(usuario)
 
 
 def mostrar_rootmine() -> None:
@@ -213,7 +295,7 @@ def mostrar_rootmine() -> None:
                 st.session_state.pagina = "🔒 Mi Gestión"
                 st.rerun()
     st.markdown("### Accesos rápidos")
-    a1, a2, a3, a4, a5, a6 = st.columns(6)
+    a1, a2, a3, a4, a5 = st.columns(5)
     with a1:
         st.markdown('<div class="action-card blue"><div class="action-icon">📝</div><h3>Nuevo ADF</h3><p>Inicia un análisis guiado de causa raíz.</p></div>', unsafe_allow_html=True)
         if st.button("Comenzar →", type="primary", use_container_width=True, key="dash_nuevo"):
@@ -230,11 +312,6 @@ def mostrar_rootmine() -> None:
         if st.button("Ver indicadores →", use_container_width=True, key="dash_ind"):
             st.session_state.pagina = "📊 Indicadores"
             st.rerun()
-    with a6:
-        st.markdown('<div class="action-card blue"><div class="action-icon">📈</div><h3>Historial de Fallas y Reincidencias</h3><p>Revisa eventos, detecta fallas repetitivas y evalúa los ADF.</p></div>', unsafe_allow_html=True)
-        if st.button("Ver fallas →", use_container_width=True, key="dash_historial_fallas"):
-            st.session_state.pagina = "📈 Historial de Fallas y Reincidencias"
-            st.rerun()
     with a4:
         st.markdown('<div class="action-card amber"><div class="action-icon">📋</div><h3>Planes</h3><p>Gestiona vencimientos, respaldos y cierre de acciones.</p></div>', unsafe_allow_html=True)
         if st.button("Gestionar →", use_container_width=True, key="dash_planes"):
@@ -246,83 +323,13 @@ def mostrar_rootmine() -> None:
             st.session_state.pagina = "🧠 Base de conocimiento"
             st.rerun()
 
-    # Acceso exclusivo del administrador RootMine.
-    if _es_admin_rootmine(usuario_actual):
-        cap_titulo, cap_actualizar = st.columns([4, 1], vertical_alignment="center")
-        with cap_titulo:
-            st.markdown("#### 📡 Capacidad RootMine")
-        with cap_actualizar:
-            if st.button("↻ Actualizar", key="refresh_capacidad", use_container_width=True):
-                dashboard_cache.clear(); uso_ia_cache.clear(); almacenamiento_cache.clear(); st.rerun()
-        uso_ia = uso_ia_cache()
-        limites = limites_configurados()
-        almacenamiento = almacenamiento_cache()
-        modelo_ia = obtener_configuracion().modelo
-
-        cap1, cap2, cap3 = st.columns(3)
-        limite_h = limites.get("hora", 0)
-        limite_d = limites.get("dia", 0)
-
-        cap1.metric(
-            "GearBot · última hora",
-            f"{uso_ia.get('ultima_hora', 0)} / {limite_h if limite_h else '—'}",
-            help="Consultas enviadas por RootMine durante los últimos 60 minutos.",
-        )
-        cap2.metric(
-            "GearBot · hoy",
-            f"{uso_ia.get('hoy', 0)} / {limite_d if limite_d else '—'}",
-            help="Consultas enviadas por RootMine durante el día actual (hora de Chile).",
-        )
-
-        if almacenamiento.get("limite_bytes", 0):
-            usados_mb = mb(almacenamiento.get("usados_bytes", 0))
-            libres_mb = mb(almacenamiento.get("disponibles_bytes", 0))
-            cap3.metric(
-                "Nube Supabase",
-                f"{libres_mb:.1f} MB libres",
-                delta=f"{usados_mb:.1f} MB usados",
-                delta_color="off",
-                help="Uso de la base PostgreSQL operacional de RootMine.",
-            )
-            st.progress(min(1.0, almacenamiento.get("porcentaje", 0) / 100.0))
-            st.caption(
-                f"☁️ Base de datos: {usados_mb:.1f} MB usados de 500 MB · "
-                f"{libres_mb:.1f} MB disponibles. Modelo GearBot: {modelo_ia}."
-            )
-        else:
-            cap3.metric("Base de datos", almacenamiento.get("backend", "No disponible"))
-
-        if not limite_h or not limite_d:
-            st.info(
-                "Para mostrar el porcentaje exacto de cuota de GearBot, configura "
-                "`GEMINI_HOURLY_LIMIT` y `GEMINI_DAILY_LIMIT` en Secrets con los "
-                "límites que muestra Google AI Studio para este proyecto/modelo. "
-                "RootMine ya está contando las consultas automáticamente."
-            )
-        elif limite_h or limite_d:
-            if limite_h:
-                st.progress(min(1.0, uso_ia.get("ultima_hora", 0) / max(1, limite_h)))
-            if limite_d:
-                st.progress(min(1.0, uso_ia.get("hoy", 0) / max(1, limite_d)))
-
-        if uso_ia.get("rechazos_cuota_hoy", 0):
-            st.warning(
-                f"GearBot ha registrado {uso_ia['rechazos_cuota_hoy']} intento(s) "
-                "rechazados por cuota durante el día."
-            )
-
-        st.markdown("#### ⚙️ Administración")
-        adm_col, _ = st.columns([1.05, 3.95])
-        with adm_col:
-            st.markdown(
-                '<div class="action-card admin"><div class="action-icon">👥</div>'
-                '<h3>Administración</h3>'
-                '<p>Crea, edita y elimina cuentas; gestiona roles y restablece llaves de acceso.</p></div>',
-                unsafe_allow_html=True,
-            )
-            if st.button("Administrar cuentas →", type="primary", use_container_width=True, key="dash_admin"):
-                st.session_state.pagina = "👥 Administración de cuentas"
-                st.rerun()
+    # Sexta tarjeta en una segunda fila: conserva el ancho de las cinco originales.
+    segunda_fila = st.columns(5)
+    with segunda_fila[0]:
+        st.markdown('<div class="action-card blue"><div class="action-icon">📈</div><h3>Fallas y reincidencias</h3><p>Explora eventos SAP, patrones repetitivos y efectividad ADF.</p></div>', unsafe_allow_html=True)
+        if st.button("Ver fallas →", use_container_width=True, key="dash_historial_fallas"):
+            st.session_state.pagina = "📈 Historial de Fallas y Reincidencias"
+            st.rerun()
 
     recientes = recientes_livianos(limite=5)
     st.markdown("### Análisis recientes")

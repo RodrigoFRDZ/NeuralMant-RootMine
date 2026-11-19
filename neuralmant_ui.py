@@ -410,14 +410,14 @@ def mostrar_identificacion() -> None:
 
 def _opciones_navegacion(usuario, pagina):
     opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
-    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
+    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📈 Historial de Fallas y Reincidencias", "🧠 Base de conocimiento"]
     if pagina in ["🧠 RootMine", *rootmine]:
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
         opciones.append("✅ Aprobaciones de materiales")
     if gestion_autorizado(usuario):
         opciones.append("🔒 Mi Gestión")
-    if usuario.get("es_admin"):
+    if usuario.get("es_admin") and pagina == "👥 Administración de cuentas":
         opciones.append("👥 Administración de cuentas")
     opciones.append("ℹ️ Acerca de")
     return opciones

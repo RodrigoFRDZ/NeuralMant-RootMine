@@ -303,12 +303,7 @@ def _panel_modos_falla(registros) -> None:
 
 
 def mostrar_indicadores() -> None:
-    vista_indicadores, vista_historial = st.tabs(["📊 Indicadores generales", "📈 Historial de fallas y reincidencias"])
-    with vista_historial:
-        from modulos.historial_reincidencias import mostrar_historial_reincidencias
-        mostrar_historial_reincidencias()
-    with vista_indicadores:
-        _mostrar_indicadores_generales()
+    _mostrar_indicadores_generales()
 
 
 def _mostrar_indicadores_generales() -> None:
