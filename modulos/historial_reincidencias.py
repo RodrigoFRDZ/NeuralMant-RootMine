@@ -382,16 +382,14 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         with st.container(border=True):
             cab,est=st.columns([4,1])
             cab.markdown(f'**ADF #{adf.id} · {html.escape(str(adf.equipo or "Equipo no informado"))}**')
-            fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
-            if not fenomeno:
-                fenomeno = ' '.join(str(getattr(adf, 'relato_original', '') or '').split())
-            if not fenomeno and origen:
-                fenomeno = _resumen(origen)
+            # Texto principal: conclusión técnica del ADF, no descripción SAP.
+            # Los textos de avisos se reservan para la comparación interna.
+            fenomeno = ' '.join(str(getattr(adf, 'conclusion', '') or '').split())
             st.markdown(
                 '<div style="font-size:.75rem;color:#91a9bf;font-weight:700;'
                 'letter-spacing:.07em;margin-top:.45rem">FENÓMENO ANALIZADO</div>'
                 '<div style="font-size:1.02rem;font-weight:600;margin:.25rem 0 1rem">'
-                + html.escape(fenomeno[:300] if fenomeno else 'Fenómeno no registrado en el ADF')
+                + html.escape(fenomeno if fenomeno else 'Conclusión del ADF pendiente de registro')
                 + '</div>',
                 unsafe_allow_html=True
             )
@@ -499,22 +497,24 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                             st.success('ADF reabierto y registrado en historial de validación.')
                             st.rerun()
                         except Exception as exc:st.error(str(exc))
-            # Mostrar el fundamento directamente; no ocultarlo en un desplegable.
+            # Criterio desplegable: resumen técnico, sin mostrar texto SAP.
             if razon and origen:
-                st.markdown(
-                    '<div style="border:1px solid #294660;background:#0d2337;'
-                    'border-radius:12px;padding:16px 19px;margin:16px 0">'
-                    '<div style="color:#b8d8f2;font-weight:750;margin-bottom:8px">'
-                    '🎯 Criterio de evaluación</div>'
-                    '<div style="color:#d7e5f0;line-height:1.55">'
-                    '<b>Falla vigilada:</b> ' + html.escape(_resumen(origen)[:260]) + '<br>'
-                    '<b>Plazo definido:</b> ' + str(plazo) + ' días<br>'
-                    '<b>Fundamento:</b> ' + html.escape(razon) + '<br>'
-                    '<b>Condición de efectividad:</b> completar el plazo con datos SAP '
-                    'suficientes y sin reincidencias equivalentes confirmadas.'
-                    '</div></div>',
-                    unsafe_allow_html=True
-                )
+                with st.expander('🎯 Criterio de evaluación', expanded=False):
+                    st.markdown('**Conclusión del ADF**')
+                    st.write(fenomeno or 'Conclusión pendiente de registro.')
+                    st.markdown(f'**Período de evaluación:** {plazo} días')
+                    st.markdown('**Fundamento del período**')
+                    st.write(razon)
+                    st.caption(
+                        'Se revisarán internamente los avisos SAP posteriores a la '
+                        'ejecución de los planes para identificar posibles recurrencias '
+                        'del mismo fenómeno. Las coincidencias deben ser confirmadas '
+                        'antes de declarar el ADF no efectivo.'
+                    )
+                    st.markdown(
+                        '**Condición de efectividad:** cumplir el período con datos '
+                        'SAP suficientes y sin reincidencias equivalentes confirmadas.'
+                    )
             if cancelados and autorizado:
                 with st.expander('Planes cancelados · justificaciones'):
                     for plan in cancelados:
