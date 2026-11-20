@@ -300,9 +300,61 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         # Si el ADF ya registra aviso SAP, es la fuente principal, no inferir otro.
         candidatos=_origen_candidatos(adf,avisos,fecha_evento_manual) if origen is None and not ids_adf else []
         if origen and inicio:
-            asociados=[e for e in avisos if e.equipo_codigo==origen.equipo_codigo and e.modo==origen.modo and e.fecha<=inicio]
-            plazo,confianza,razon=plazo_sugerido(asociados)
-            plazo=max(1,int(plazo))
+            # Comparar el fenómeno de origen; el modo genérico por sí solo no basta.
+            base_fenomeno = _resumen(origen)
+            asociados = [
+                e for e in avisos
+                if e.equipo_codigo == origen.equipo_codigo
+                and e.fecha <= inicio
+                and (
+                    str(e.aviso) == str(origen.aviso)
+                    or (
+                        _similitud(base_fenomeno, _resumen(e)) >= 0.38
+                        and (
+                            not origen.modo
+                            or origen.modo == 'Sin clasificar'
+                            or e.modo == origen.modo
+                        )
+                    )
+                )
+            ]
+            fechas_equivalentes = sorted({e.fecha for e in asociados})
+            intervalos = [
+                (b-a).days for a,b in zip(fechas_equivalentes, fechas_equivalentes[1:])
+                if (b-a).days > 0
+            ]
+            if len(intervalos) >= 2:
+                ordenados = sorted(intervalos)
+                mediana = ordenados[len(ordenados)//2] if len(ordenados)%2 else (
+                    ordenados[len(ordenados)//2-1]+ordenados[len(ordenados)//2])/2
+                plazo = min(730, max(30, round(mediana * 2)))
+                confianza = 'media'
+                razon = (
+                    f'{len(fechas_equivalentes)} eventos preliminarmente equivalentes; '
+                    f'mediana de recurrencia de {mediana:g} días. '
+                    'Se proponen dos ciclos de recurrencia. '
+                    'Las coincidencias requieren revisión técnica.'
+                )
+            elif len(intervalos) == 1:
+                plazo = min(730, max(60, round(intervalos[0] * 2)))
+                confianza = 'baja'
+                razon = (
+                    f'Dos eventos preliminarmente equivalentes separados por {intervalos[0]} días. '
+                    'Se proponen dos intervalos por prudencia; evidencia histórica limitada.'
+                )
+            else:
+                # Sin recurrencia demostrada: criterio provisional basado en la
+                # consecuencia observable, nunca inventar una frecuencia.
+                tp_min = float(getattr(origen, 'tp_min', 0) or 0)
+                plazo = 365 if tp_min >= 240 else 180 if tp_min >= 60 else 90
+                confianza = 'muy baja'
+                razon = (
+                    f'Sin recurrencia equivalente demostrable. Se propone un plazo '
+                    f'provisional de {plazo} días según el tiempo perdido del aviso '
+                    f'({tp_min:g} min), como indicador parcial de impacto. '
+                    'La criticidad real y la exposición operativa deben validarse.'
+                )
+            plazo = max(1, int(plazo))
             # Solo se evalúan días respaldados por el historial SAP importado.
             # No avanzar a la fecha actual si no hay importación nueva.
             corte=ultima if ultima else inicio
@@ -327,7 +379,20 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         if filtro!='Todos' and filtro!=estado:continue
         with st.container(border=True):
             cab,est=st.columns([4,1])
-            cab.markdown(f'**ADF #{adf.id} · {adf.equipo}**')
+            cab.markdown(f'**ADF #{adf.id} · {html.escape(str(adf.equipo or "Equipo no informado"))}**')
+            fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
+            if not fenomeno:
+                fenomeno = ' '.join(str(getattr(adf, 'relato_original', '') or '').split())
+            if not fenomeno and origen:
+                fenomeno = _resumen(origen)
+            st.markdown(
+                '<div style="font-size:.75rem;color:#91a9bf;font-weight:700;'
+                'letter-spacing:.07em;margin-top:.45rem">FENÓMENO ANALIZADO</div>'
+                '<div style="font-size:1.02rem;font-weight:600;margin:.25rem 0 1rem">'
+                + html.escape(fenomeno[:300] if fenomeno else 'Fenómeno no registrado en el ADF')
+                + '</div>',
+                unsafe_allow_html=True
+            )
             est.markdown({'Efectivo':'🟢','Reincidencia':'🔴','En evaluación':'🟡','Por verificar':'🟠'}.get(estado,'⚪')+' **'+estado+'**')
             if origen:
                 st.caption(f'Aviso de origen: {origen.aviso} · {origen.fecha:%d/%m/%Y} · TP {origen.tp_min:g} min')
@@ -342,7 +407,17 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                 st.caption(f'Inicio de efectividad: {inicio:%d/%m/%Y}' +
                            (' · Fecha confirmada manualmente' if fechas_manuales.get(adf.id,(None,None))[1] else
                             ' · Fecha registrada en el plan (verificar si es real)'))
-                st.progress(min(1.0,dias/plazo))
+                porcentaje = min(100.0, max(0.0, 100 * dias / plazo))
+                barra = (
+                    '<div style="margin:15px 0 8px">'
+                    '<div style="height:15px;border-radius:999px;overflow:hidden;'
+                    'background:#283444;border:1px solid #3b4b5c">'
+                    f'<div style="width:{porcentaje:.2f}%;height:100%;border-radius:999px;'
+                    'background:linear-gradient(90deg,#0879d9,#28b8d8)"></div></div>'
+                    f'<div style="text-align:right;color:#9bb3c8;font-size:.78rem;'
+                    f'margin-top:5px">{porcentaje:.1f}% del período evaluado</div></div>'
+                )
+                st.markdown(barra, unsafe_allow_html=True)
                 if ultima:
                     st.caption(f'Fecha de corte SAP: {ultima:%d/%m/%Y}. El contador no avanza más allá de esa fecha.')
                     if inicio > ultima:
@@ -357,7 +432,17 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             st.caption(f'{len(activos)} plan(es) activo(s) ejecutado(s) y verificado(s)')
             if cancelados:
                 st.caption(f'{len(cancelados)} plan(es) cancelado(s) con justificación')
-            if autorizado:
+            # Tras la confirmación manual, ocultar el formulario habitual.
+            # Un administrador puede abrirlo explícitamente para una corrección auditada.
+            fecha_confirmada = bool(fechas_manuales.get(adf.id, (None, None))[1])
+            mostrar_fechas = not fecha_confirmada
+            if autorizado and fecha_confirmada and _admin(usuario):
+                mostrar_fechas = st.checkbox(
+                    'Administración · rectificar fecha confirmada',
+                    key=f'ef_admin_rectificar_{adf.id}',
+                    value=False
+                )
+            if autorizado and mostrar_fechas:
                 with st.expander('Verificar o corregir fechas del ADF', expanded=False):
                     st.caption('La falla original sirve para identificar el aviso SAP. '
                                'El período de efectividad empieza al implementar realmente '
@@ -412,18 +497,32 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                             st.success('ADF reabierto y registrado en historial de validación.')
                             st.rerun()
                         except Exception as exc:st.error(str(exc))
-            # Detalles exclusivamente técnicos; no mostrar planes eliminados.
-            if razon or cancelados:
-                with st.expander('Detalles del seguimiento'):
-                    if razon:
-                        st.write('**Fundamento del plazo:**',razon)
+            # Mostrar el fundamento directamente; no ocultarlo en un desplegable.
+            if razon and origen:
+                st.markdown(
+                    '<div style="border:1px solid #294660;background:#0d2337;'
+                    'border-radius:12px;padding:16px 19px;margin:16px 0">'
+                    '<div style="color:#b8d8f2;font-weight:750;margin-bottom:8px">'
+                    '🎯 Criterio de evaluación</div>'
+                    '<div style="color:#d7e5f0;line-height:1.55">'
+                    '<b>Falla vigilada:</b> ' + html.escape(_resumen(origen)[:260]) + '<br>'
+                    '<b>Plazo definido:</b> ' + str(plazo) + ' días<br>'
+                    '<b>Fundamento:</b> ' + html.escape(razon) + '<br>'
+                    '<b>Condición de efectividad:</b> completar el plazo con datos SAP '
+                    'suficientes y sin reincidencias equivalentes confirmadas.'
+                    '</div></div>',
+                    unsafe_allow_html=True
+                )
+            if cancelados and autorizado:
+                with st.expander('Planes cancelados · justificaciones'):
                     for plan in cancelados:
                         st.write('**Plan cancelado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
                         for audit in plan.get('auditoria_administrativa') or []:
                             st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
     if not registros:st.info('No hay ADF con planes activos completamente verificados.')
-    with st.expander('Diagnóstico de elegibilidad'):
-        st.write(f'Sin planes: {sin_planes} · Sin planes activos: {sin_activos} · Pendientes de ejecución/verificación: {pendientes}')
+    if _admin(usuario):
+        with st.expander('Administración · diagnóstico de elegibilidad'):
+            st.write(f'Sin planes: {sin_planes} · Sin planes activos: {sin_activos} · Pendientes de ejecución/verificación: {pendientes}')
 
 
 def mostrar_historial_reincidencias():
