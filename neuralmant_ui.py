@@ -460,33 +460,22 @@ def mostrar_menu() -> str:
 
 
 def _desplazar_inicio_al_cambiar_modulo() -> None:
-    """Subir al inicio solo al navegar, no al actualizar controles."""
+    """Desplazamiento de cortesía: sin cambiar página, sesión ni query params.
+
+    Se invoca tras renderizar el módulo; nunca ejecuta st.rerun.
+    """
     import streamlit.components.v1 as components
-    components.html(
-        """<script>
-        (function () {
-          function arriba() {
-            try {
-              const p = window.parent;
-              const d = p.document;
-              [d.querySelector('[data-testid="stAppViewContainer"]'),
-               d.querySelector('[data-testid="stMain"]'),
-               d.querySelector('section.main'), d.scrollingElement]
-                .forEach(function(el) {
-                  if (el) {
-                    el.scrollTop = 0;
-                    if (el.scrollTo) el.scrollTo({top:0,left:0,behavior:'instant'});
-                  }
-                });
-              p.scrollTo(0, 0);
-            } catch (e) { /* Evitar que un bloqueo del iframe rompa la app */ }
-          }
-          arriba();
-          requestAnimationFrame(arriba);
-          setTimeout(arriba, 150);
-        })();
-        </script>""", height=0, width=0,
-    )
+    components.html("""<script>
+      (function () {
+        try {
+          const d = window.parent.document;
+          const main = d.querySelector('[data-testid="stMain"]') ||
+                       d.querySelector('[data-testid="stAppViewContainer"]');
+          if (main) main.scrollTop = 0;
+          if (d.scrollingElement) d.scrollingElement.scrollTop = 0;
+        } catch (e) { /* La navegación funciona aunque el navegador lo bloquee. */ }
+      })();
+    </script>""", height=0)
 
 
 def main() -> None:
@@ -513,12 +502,12 @@ def main() -> None:
                 st.rerun()
     pagina = mostrar_menu()
     pagina_anterior = st.session_state.get("_scroll_modulo_anterior")
-    if pagina_anterior != pagina:
+    cambio_modulo = pagina_anterior != pagina
+    if cambio_modulo:
         st.session_state["_scroll_modulo_anterior"] = pagina
-        _desplazar_inicio_al_cambiar_modulo()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
-    mostrar_aviso_materiales(st.session_state.usuario_actual)
+    # Aprobaciones de materiales: solo dentro de Gestión de Materiales.
     eleccion_materiales = st.session_state.pop("mat_eleccion_vista", False)
     if pagina == "📦 Gestión de Materiales" and st.session_state.get("_pagina_renderizada") != pagina and not st.session_state.get("mat_solicitud_enlace") and not eleccion_materiales:
         st.session_state["mat_vista"] = None
@@ -547,6 +536,9 @@ def main() -> None:
             st.stop()
         mostrar_administracion()
     else: mostrar_acerca()
+    # No cambia estado ni dispara rerun. Solo se solicita al cambiar de vista.
+    if cambio_modulo:
+        _desplazar_inicio_al_cambiar_modulo()
 
 
 if __name__ == "__main__":
