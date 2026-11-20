@@ -11,6 +11,7 @@ from difflib import SequenceMatcher
 from database.vinculos_efectividad import obtener_vinculos, confirmar_vinculo, reabrir_adf_por_reincidencia, obtener_fechas_manuales, guardar_fechas_manuales
 from collections import defaultdict
 from database.periodos_efectividad import obtener_o_fijar_periodo
+from modulos.fenomenos_adf import fenomeno_adf
 
 from sqlalchemy.orm import Session
 from database.conexion import engine
@@ -259,7 +260,7 @@ def _reincidencias(origen, avisos, inicio, plazo, vinculados):
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
     st.markdown('### Seguimiento de efectividad de ADF')
-    st.caption('Interfaz de efectividad · v16.8 · criterio basado en ADF')
+    st.caption('Interfaz de efectividad · v16.9 · fenómeno normalizado')
     st.caption('Cruce SAP por equipo, fecha, TP y descripción. Las coincidencias sugeridas requieren confirmación; no se atribuyen causas automáticamente.')
     usuario=st.session_state.get('usuario_actual') or {}
     autorizado=_autorizado(usuario)
@@ -303,7 +304,11 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         candidatos=_origen_candidatos(adf,avisos,fecha_evento_manual) if origen is None and not ids_adf else []
         if origen and inicio:
             # Comparar el fenómeno de origen; el modo genérico por sí solo no basta.
-            base_fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split()) or _resumen(origen)
+            fenomeno_normalizado, fenomeno_confiable = fenomeno_adf(adf)
+            base_fenomeno = (
+                ' '.join(str(getattr(adf, 'efecto', '') or '').split())
+                if fenomeno_confiable else ''
+            )
             asociados = [
                 e for e in avisos
                 if e.equipo_codigo == origen.equipo_codigo
@@ -311,7 +316,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                 and (
                     str(e.aviso) == str(origen.aviso)
                     or (
-                        _similitud(base_fenomeno, _resumen(e)) >= 0.38
+                        bool(base_fenomeno) and _similitud(base_fenomeno, _resumen(e)) >= 0.38
                         and (
                             not origen.modo
                             or origen.modo == 'Sin clasificar'
@@ -411,24 +416,14 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         if filtro!='Todos' and filtro!=estado:continue
         with st.container(border=True):
             cab,est=st.columns([4,1])
-            titulo_falla = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
-            titulo_corto = titulo_falla[:95].rstrip() + ('…' if len(titulo_falla)>95 else '')
-            cab.markdown(
-                f'**ADF #{adf.id} · {html.escape(titulo_corto or "Falla sin título")} '
-                f'- {html.escape(str(adf.equipo or "Equipo no informado"))}**'
-            )
-            # Texto principal: conclusión técnica del ADF, no descripción SAP.
-            # Los textos de avisos se reservan para la comparación interna.
-            fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
+            fenomeno, fenomeno_confirmable = fenomeno_adf(adf)
             conclusion = ' '.join(str(getattr(adf, 'conclusion', '') or '').split())
-            st.markdown(
-                '<div style="font-size:.75rem;color:#91a9bf;font-weight:700;'
-                'letter-spacing:.07em;margin-top:.45rem">FENÓMENO DE FALLA</div>'
-                '<div style="font-size:1.02rem;font-weight:600;margin:.25rem 0 1rem">'
-                + html.escape(fenomeno if fenomeno else 'Fenómeno pendiente de registro')
-                + '</div>',
-                unsafe_allow_html=True
+            cab.markdown(
+                f'**ADF #{adf.id} · {html.escape(fenomeno.upper())} '
+                f'- {html.escape(str(adf.equipo or "Equipo no informado").upper())}**'
             )
+            if not fenomeno_confirmable:
+                st.caption('Fenómeno no identificable con certeza en este ADF; requiere revisión técnica.')
             est.markdown({'Efectivo':'🟢','Reincidencia':'🔴','En evaluación':'🟡','Por verificar':'🟠'}.get(estado,'⚪')+' **'+estado+'**')
             if origen:
                 st.caption(f'Aviso de origen: {origen.aviso} · {origen.fecha:%d/%m/%Y} · TP {origen.tp_min:g} min')
