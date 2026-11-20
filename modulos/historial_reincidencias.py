@@ -10,6 +10,7 @@ import unicodedata
 from difflib import SequenceMatcher
 from database.vinculos_efectividad import obtener_vinculos, confirmar_vinculo, reabrir_adf_por_reincidencia, obtener_fechas_manuales, guardar_fechas_manuales
 from collections import defaultdict
+from database.periodos_efectividad import obtener_o_fijar_periodo
 
 from sqlalchemy.orm import Session
 from database.conexion import engine
@@ -258,6 +259,7 @@ def _reincidencias(origen, avisos, inicio, plazo, vinculados):
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
     st.markdown('### Seguimiento de efectividad de ADF')
+    st.caption('Interfaz de efectividad · v16.8 · criterio basado en ADF')
     st.caption('Cruce SAP por equipo, fecha, TP y descripción. Las coincidencias sugeridas requieren confirmación; no se atribuyen causas automáticamente.')
     usuario=st.session_state.get('usuario_actual') or {}
     autorizado=_autorizado(usuario)
@@ -301,7 +303,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         candidatos=_origen_candidatos(adf,avisos,fecha_evento_manual) if origen is None and not ids_adf else []
         if origen and inicio:
             # Comparar el fenómeno de origen; el modo genérico por sí solo no basta.
-            base_fenomeno = _resumen(origen)
+            base_fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split()) or _resumen(origen)
             asociados = [
                 e for e in avisos
                 if e.equipo_codigo == origen.equipo_codigo
@@ -343,18 +345,46 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                     'Se proponen dos intervalos por prudencia; evidencia histórica limitada.'
                 )
             else:
-                # Sin recurrencia demostrada: criterio provisional basado en la
-                # consecuencia observable, nunca inventar una frecuencia.
-                tp_min = float(getattr(origen, 'tp_min', 0) or 0)
-                plazo = 365 if tp_min >= 240 else 180 if tp_min >= 60 else 90
-                confianza = 'muy baja'
+                # Sin frecuencia demostrada, usar impacto técnico del fenómeno del ADF.
+                # Nunca utilizar el TP del aviso como indicador de criticidad.
+                texto_riesgo = ' '.join(str(getattr(adf, campo, '') or '')
+                    for campo in ('efecto','conclusion','relato_original')).casefold()
+                alto = ('fractura','rotura','quiebre','explosi','incendio',
+                        'amoniaco','amoníaco','fuga de gas','seguridad','lesion',
+                        'lesión','colapso','desprendimiento')
+                medio = ('fuga','atasco','sobrecalentamiento','vibracion',
+                         'vibración','desgaste','cavitacion','cavitación')
+                if any(p in texto_riesgo for p in alto):
+                    plazo = 365
+                    nivel = 'potencial de daño severo o integridad mecánica'
+                elif any(p in texto_riesgo for p in medio):
+                    plazo = 180
+                    nivel = 'deterioro o pérdida funcional relevante'
+                else:
+                    plazo = 180
+                    nivel = 'impacto no clasificable con evidencia disponible'
+                confianza = 'baja'
                 razon = (
-                    f'Sin recurrencia equivalente demostrable. Se propone un plazo '
-                    f'provisional de {plazo} días según el tiempo perdido del aviso '
-                    f'({tp_min:g} min), como indicador parcial de impacto. '
-                    'La criticidad real y la exposición operativa deben validarse.'
+                    f'No se identificó recurrencia histórica equivalente suficiente '
+                    f'para el fenómeno del ADF. Se propone {plazo} días por '
+                    f'{nivel}, a partir del fenómeno y la conclusión técnica del ADF. '
+                    'Es una estimación precautoria; no se utilizó el tiempo perdido '
+                    'del aviso como sustituto de la criticidad. '
+                    'La exposición operativa real debe revisarse.'
                 )
             plazo = max(1, int(plazo))
+            # Fijar el plazo una sola vez por ADF para que nuevas cargas SAP
+            # no lo modifiquen de forma silenciosa.
+            try:
+                plazo, razon, confianza, inicio_guardado = obtener_o_fijar_periodo(
+                    adf.id, inicio, plazo, razon, confianza
+                )
+                if inicio_guardado[:10] != inicio.isoformat():
+                    razon += (' Fecha de ejecución modificada posteriormente: '
+                              'requiere revisión administrativa del período fijado.')
+            except Exception as exc:
+                st.error(f'ADF #{adf.id}: no fue posible guardar/leer el plazo de evaluación: {exc}')
+                continue
             # Solo se evalúan días respaldados por el historial SAP importado.
             # No avanzar a la fecha actual si no hay importación nueva.
             corte=ultima if ultima else inicio
@@ -381,15 +411,21 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         if filtro!='Todos' and filtro!=estado:continue
         with st.container(border=True):
             cab,est=st.columns([4,1])
-            cab.markdown(f'**ADF #{adf.id} · {html.escape(str(adf.equipo or "Equipo no informado"))}**')
+            titulo_falla = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
+            titulo_corto = titulo_falla[:95].rstrip() + ('…' if len(titulo_falla)>95 else '')
+            cab.markdown(
+                f'**ADF #{adf.id} · {html.escape(titulo_corto or "Falla sin título")} '
+                f'- {html.escape(str(adf.equipo or "Equipo no informado"))}**'
+            )
             # Texto principal: conclusión técnica del ADF, no descripción SAP.
             # Los textos de avisos se reservan para la comparación interna.
-            fenomeno = ' '.join(str(getattr(adf, 'conclusion', '') or '').split())
+            fenomeno = ' '.join(str(getattr(adf, 'efecto', '') or '').split())
+            conclusion = ' '.join(str(getattr(adf, 'conclusion', '') or '').split())
             st.markdown(
                 '<div style="font-size:.75rem;color:#91a9bf;font-weight:700;'
-                'letter-spacing:.07em;margin-top:.45rem">CONCLUSIÓN DEL ADF</div>'
+                'letter-spacing:.07em;margin-top:.45rem">FENÓMENO DE FALLA</div>'
                 '<div style="font-size:1.02rem;font-weight:600;margin:.25rem 0 1rem">'
-                + html.escape(fenomeno if fenomeno else 'Conclusión del ADF pendiente de registro')
+                + html.escape(fenomeno if fenomeno else 'Fenómeno pendiente de registro')
                 + '</div>',
                 unsafe_allow_html=True
             )
@@ -406,7 +442,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                 st.markdown(f'{color} **{min(dias,plazo)} / {plazo} días evaluados** · {max(0,plazo-dias)} restantes')
                 st.caption(f'Inicio de efectividad: {inicio:%d/%m/%Y}' +
                            (' · Fecha confirmada manualmente' if fechas_manuales.get(adf.id,(None,None))[1] else
-                            ' · Fecha registrada en el plan (verificar si es real)'))
+                            ' · Fecha registrada en el plan'))
                 porcentaje = min(100.0, max(0.0, 100 * dias / plazo))
                 barra = (
                     '<div style="margin:15px 0 8px">'
@@ -432,16 +468,10 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             st.caption(f'{len(activos)} plan(es) activo(s) ejecutado(s) y verificado(s)')
             if cancelados:
                 st.caption(f'{len(cancelados)} plan(es) cancelado(s) con justificación')
-            # Tras la confirmación manual, ocultar el formulario habitual.
-            # Un administrador puede abrirlo explícitamente para una corrección auditada.
-            fecha_confirmada = bool(fechas_manuales.get(adf.id, (None, None))[1])
+            # Ocultar todos los controles al existir una fecha válida,
+            # confirmada manualmente o acreditada por los planes activos.
+            fecha_confirmada = bool(inicio_manual or inicio_automatico)
             mostrar_fechas = not fecha_confirmada
-            if autorizado and fecha_confirmada and _admin(usuario):
-                mostrar_fechas = st.checkbox(
-                    'Administración · rectificar fecha confirmada',
-                    key=f'ef_admin_rectificar_{adf.id}',
-                    value=False
-                )
             if autorizado and mostrar_fechas:
                 with st.expander('Verificar o corregir fechas del ADF', expanded=False):
                     st.caption('La falla original sirve para identificar el aviso SAP. '
@@ -500,8 +530,8 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             # Criterio siempre accesible en ventana desplegable, sin revelar
             # la descripción SAP como si fuera la conclusión técnica del ADF.
             with st.expander('🎯 Criterio de evaluación', expanded=False):
-                st.markdown('**Falla evaluada — conclusión técnica del ADF**')
-                st.write(fenomeno or 'La conclusión técnica aún no está registrada en el ADF.')
+                st.markdown('**Causa raíz / conclusión técnica del ADF**')
+                st.write(conclusion or 'La conclusión técnica aún no está registrada en el ADF.')
                 if inicio and origen and plazo:
                     st.markdown(f'**Período de evaluación:** {plazo} días')
                     st.markdown('**Fundamento del plazo**')
