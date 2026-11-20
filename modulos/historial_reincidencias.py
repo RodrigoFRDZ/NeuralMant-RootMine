@@ -50,7 +50,8 @@ def _clasificar_planes(planes):
     """Los planes archivados/cancelados no son ejecutados ni pendientes activos."""
     activos, cancelados, archivados = [], [], []
     for p in planes:
-        if p.get("eliminado_administrador") or p.get("estado_administrativo") == "Eliminado":
+        if (p.get("eliminado_administrador") or
+                str(p.get("estado_administrativo") or "").strip().lower() in {"eliminado", "archivado", "eliminado (archivado)"}):
             archivados.append(p)
         elif p.get("estado_administrativo") == "Cancelado":
             cancelados.append(p)
@@ -336,13 +337,20 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                 color='🔴' if estado=='Reincidencia' else '🟢' if estado=='Efectivo' else '🟡'
                 st.markdown(f'{color} **{min(dias,plazo)} / {plazo} días evaluados** · {max(0,plazo-dias)} restantes')
                 st.progress(min(1.0,dias/plazo))
-                if ultima and ultima < dt.date.today():
-                    st.caption('Avance calculado hasta la última importación SAP, no hasta hoy.')
+                if ultima:
+                    st.caption(f'Fecha de corte SAP: {ultima:%d/%m/%Y}. El contador no avanza más allá de esa fecha.')
+                    if inicio > ultima:
+                        st.info('La ejecución del último plan es posterior a la fecha de corte SAP. '
+                                'Por eso aparecen 0 días evaluados; importa avisos SAP más recientes '
+                                'o corrige la fecha de ejecución si está equivocada.')
                 if estado=='Efectivo':st.success('Plazo cumplido sin reincidencias similares detectadas en el historial cargado.')
             elif not inicio:
                 st.warning('Falta fecha de ejecución verificable en los planes activos; no se inicia el conteo.')
+            # No mostrar archivados/eliminados en ningún contador ni detalle de efectividad.
+            # La auditoría de eliminación permanece únicamente en administración.
+            st.caption(f'{len(activos)} plan(es) activo(s) ejecutado(s) y verificado(s)')
             if cancelados:
-                st.caption(f'{len(activos)} plan(es) activo(s) verificado(s) · {len(cancelados)} cancelado(s)')
+                st.caption(f'{len(cancelados)} plan(es) cancelado(s) con justificación')
             if autorizado and (not origen or not inicio):
                 with st.expander('Registrar fecha faltante (manual)'):
                     st.caption('La fecha del evento es la falla original; el inicio de efectividad corresponde a la ejecución real del último plan activo, no a la creación del ADF.')
@@ -393,12 +401,15 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                             st.success('ADF reabierto y registrado en historial de validación.')
                             st.rerun()
                         except Exception as exc:st.error(str(exc))
-            with st.expander('Detalles de seguimiento y justificaciones'):
-                if razon:st.write('**Fundamento del plazo:**',razon)
-                for plan in cancelados:
-                    st.write('**Plan no ejecutado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
-                    for audit in plan.get('auditoria_administrativa') or []:
-                        st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
+            # Detalles exclusivamente técnicos; no mostrar planes eliminados.
+            if razon or cancelados:
+                with st.expander('Detalles del seguimiento'):
+                    if razon:
+                        st.write('**Fundamento del plazo:**',razon)
+                    for plan in cancelados:
+                        st.write('**Plan cancelado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
+                        for audit in plan.get('auditoria_administrativa') or []:
+                            st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
     if not registros:st.info('No hay ADF con planes activos completamente verificados.')
     with st.expander('Diagnóstico de elegibilidad'):
         st.write(f'Sin planes: {sin_planes} · Sin planes activos: {sin_activos} · Pendientes de ejecución/verificación: {pendientes}')
