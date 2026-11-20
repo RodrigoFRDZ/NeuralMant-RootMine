@@ -460,29 +460,30 @@ def mostrar_menu() -> str:
 
 
 def _desplazar_inicio_al_cambiar_modulo() -> None:
-    """Desplazar al inicio tras renderizar un nuevo módulo."""
+    """Subir al inicio solo al navegar, no al actualizar controles."""
     import streamlit.components.v1 as components
     components.html(
         """<script>
-        (() => {
-          let intentos = 0;
+        (function () {
           function arriba() {
             try {
-              const w = window.parent, d = w.document;
-              [d.querySelector('[data-testid="stMain"]'),
-               d.querySelector('[data-testid="stAppViewContainer"]'),
+              const p = window.parent;
+              const d = p.document;
+              [d.querySelector('[data-testid="stAppViewContainer"]'),
+               d.querySelector('[data-testid="stMain"]'),
                d.querySelector('section.main'), d.scrollingElement]
-                .forEach(el => {
-                  if (!el) return;
-                  el.scrollTop = 0;
-                  if (typeof el.scrollTo === 'function') el.scrollTo(0, 0);
+                .forEach(function(el) {
+                  if (el) {
+                    el.scrollTop = 0;
+                    if (el.scrollTo) el.scrollTo({top:0,left:0,behavior:'instant'});
+                  }
                 });
-              w.scrollTo(0, 0);
-            } catch (e) {}
-            intentos++;
-            if (intentos < 12) setTimeout(arriba, intentos < 5 ? 100 : 250);
+              p.scrollTo(0, 0);
+            } catch (e) { /* Evitar que un bloqueo del iframe rompa la app */ }
           }
           arriba();
+          requestAnimationFrame(arriba);
+          setTimeout(arriba, 150);
         })();
         </script>""", height=0, width=0,
     )
@@ -512,9 +513,9 @@ def main() -> None:
                 st.rerun()
     pagina = mostrar_menu()
     pagina_anterior = st.session_state.get("_scroll_modulo_anterior")
-    cambio_modulo = pagina_anterior != pagina
-    if cambio_modulo:
+    if pagina_anterior != pagina:
         st.session_state["_scroll_modulo_anterior"] = pagina
+        _desplazar_inicio_al_cambiar_modulo()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
     mostrar_aviso_materiales(st.session_state.usuario_actual)
@@ -546,9 +547,6 @@ def main() -> None:
             st.stop()
         mostrar_administracion()
     else: mostrar_acerca()
-    # Ejecutar después del contenido, no antes de que Streamlit termine de dibujarlo.
-    if cambio_modulo:
-        _desplazar_inicio_al_cambiar_modulo()
 
 
 if __name__ == "__main__":

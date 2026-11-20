@@ -258,7 +258,6 @@ def _reincidencias(origen, avisos, inicio, plazo, vinculados):
 
 def _seguimiento(adfs,avisos,filtrados,ultima):
     st.markdown('### Seguimiento de efectividad de ADF')
-    st.caption('Vista 16.2 · Planes eliminados ocultos')
     st.caption('Cruce SAP por equipo, fecha, TP y descripción. Las coincidencias sugeridas requieren confirmación; no se atribuyen causas automáticamente.')
     usuario=st.session_state.get('usuario_actual') or {}
     autorizado=_autorizado(usuario)
