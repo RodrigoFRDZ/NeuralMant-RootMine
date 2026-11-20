@@ -5,6 +5,10 @@ import json
 import re
 import streamlit as st
 import html
+import math
+import unicodedata
+from difflib import SequenceMatcher
+from database.vinculos_efectividad import obtener_vinculos, confirmar_vinculo, reabrir_adf_por_reincidencia
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
@@ -192,117 +196,183 @@ def _timeline(eventos, minimo=3):
             'Antes de generar un ADF, revisar los avisos y confirmar que los síntomas '
             'y condiciones de operación sean realmente comparables.')
 
+def _tokens(texto):
+    limpio = ''.join(c for c in unicodedata.normalize('NFKD', str(texto or '').lower())
+                     if not unicodedata.combining(c))
+    stop = {'de','del','la','el','en','por','con','para','se','no','un','una','equipo','falla','maquina','aviso'}
+    return {x for x in re.findall(r'[a-z0-9]{3,}', limpio) if x not in stop}
+
+
+def _similitud(a, b):
+    ta, tb = _tokens(a), _tokens(b)
+    return len(ta & tb) / len(ta | tb) if ta and tb else 0.0
+
+
+def _fecha_adf(adf):
+    for campo in ('fecha_creacion','fecha_envio_validacion','fecha_aprobacion_supervisor'):
+        valor = getattr(adf, campo, None)
+        if valor:
+            return valor.date() if isinstance(valor, dt.datetime) else valor
+    return None
+
+
+def _origen_candidatos(adf, avisos):
+    fecha = _fecha_adf(adf)
+    equipo = _normalizar(getattr(adf,'numero_equipo',''))
+    tp_adf = float(getattr(adf,'tiempo_perdido_h',0) or 0) * 60
+    relato = ' '.join(str(getattr(adf,k,'') or '') for k in ('relato_original','efecto','equipo'))
+    candidatos = []
+    for e in avisos:
+        if equipo and _normalizar(e.equipo_codigo) != equipo:
+            continue
+        if not equipo and _normalizar(getattr(adf,'equipo','')) != _normalizar(e.equipo_nombre):
+            continue
+        delta = abs((fecha-e.fecha).days) if fecha else 9999
+        if fecha and (e.fecha > fecha + dt.timedelta(days=2) or delta > 120):
+            continue
+        sim = _similitud(relato, _resumen(e))
+        tp = float(e.tp_min or 0)
+        tp_sim = 1.0 - min(1.0,abs(tp-tp_adf)/max(tp,tp_adf,1)) if tp_adf else 0.0
+        fecha_sim = max(0,1-delta/120) if fecha else 0
+        score = .52*sim + .28*tp_sim + .20*fecha_sim
+        candidatos.append((score,e))
+    return sorted(candidatos,key=lambda x:x[0],reverse=True)[:4]
+
+
+def _reincidencias(origen, avisos, inicio, plazo, vinculados):
+    fin = inicio + dt.timedelta(days=plazo)
+    resultado=[]
+    base=_resumen(origen)
+    for e in avisos:
+        if e.aviso == origen.aviso or e.equipo_codigo != origen.equipo_codigo:
+            continue
+        if not inicio < e.fecha <= fin:
+            continue
+        sim=_similitud(base,_resumen(e))
+        mismo_modo = bool(e.modo and e.modo != 'Sin clasificar' and e.modo == origen.modo)
+        if e.aviso in vinculados or (sim >= .33 and mismo_modo) or sim >= .58:
+            resultado.append((e,sim,e.aviso in vinculados))
+    return sorted(resultado,key=lambda x:x[0].fecha)
+
+
 def _seguimiento(adfs,avisos,filtrados,ultima):
-    st.markdown('#### Efectividad de ADF · Planes completamente ejecutados')
-    st.caption('La información se lee directamente desde los planes existentes. No es necesario volver a cargar fechas ni evidencias.')
-    visibles=0
-    excluidos={'sin_planes':0,'sin_activos':0,'pendientes':0,'sin_vinculo':0,'sin_fecha':0}
+    st.markdown('### Seguimiento de efectividad de ADF')
+    st.caption('Cruce SAP por equipo, fecha, TP y descripción. Las coincidencias sugeridas requieren confirmación; no se atribuyen causas automáticamente.')
+    usuario=st.session_state.get('usuario_actual') or {}
+    autorizado=_autorizado(usuario)
+    por_aviso={str(e.aviso):e for e in avisos}
+    try:
+        vinculos=obtener_vinculos()
+    except Exception as exc:
+        st.error(f'No fue posible leer los vínculos de efectividad: {exc}')
+        return
+    por_adf={}
+    for aid,aviso,tipo,autor,nota in vinculos:
+        por_adf.setdefault(aid,{}).setdefault(tipo,[]).append(aviso)
+    registros=[]
+    sin_planes=sin_activos=pendientes=0
     for adf in adfs:
         planes=_planes(adf)
         if not planes:
-            excluidos['sin_planes']+=1;continue
+            sin_planes+=1;continue
         activos,cancelados,archivados=_clasificar_planes(planes)
         if not activos:
-            excluidos['sin_activos']+=1
-            continue
-        # Cancelados/archivados quedan fuera del denominador; no son ejecutados.
-        pendientes=[p for p in activos if p.get('estado_ejecucion')!='Ejecutado verificado']
-        if pendientes:
-            excluidos['pendientes']+=1
-            continue
-        st.markdown(f'**ADF #{adf.id} · {adf.equipo}**')
-        st.success(f'Planes activos completos: {len(activos)}/{len(activos)} (100%).')
-        if cancelados or archivados:
-            st.warning(
-                f'⚠️ {len(cancelados)} plan(es) cancelado(s) y '
-                f'{len(archivados)} archivado(s). Se excluyen del cumplimiento, '
-                'pero pueden limitar la efectividad de las medidas preventivas.'
-            )
-            with st.expander('Ver planes no ejecutados y sus justificaciones'):
-                for p in cancelados+archivados:
-                    st.write(f'**{p.get("accion") or p.get("titulo") or "Plan"}** · '
-                             f'{p.get("estado_administrativo") or "Archivado"}')
-                    for registro in p.get('auditoria_administrativa') or []:
-                        st.caption(f'{registro.get("motivo","")} · {registro.get("justificacion","")}')
-        observados=[]
-        for p in activos:
-            rev=p.get('revision_ia') or {}
-            if isinstance(rev,dict) and rev.get('aprobado_con_observacion'):
-                observados.append((p.get('titulo') or p.get('descripcion') or 'Plan',
-                                   rev.get('observacion_aprobacion') or 'Aprobación con observación'))
-        origen=[e for e in avisos if e.aviso in _avisos_adf(adf)]
-        if not origen:
-            excluidos['sin_vinculo']+=1
-            st.markdown(f'**ADF #{adf.id} · {adf.equipo} — Planes completos**')
-            st.info('Planes ejecutados y verificados. Falta vincular el aviso SAP de origen para calcular efectividad y reincidencias sin confundir modos de falla.')
-            for ix, p in enumerate(activos, 1):
-                rev=p.get('revision_ia') or {}
-                st.caption(f'Plan {ix} · Confianza respaldo: {rev.get("confianza", "sin dato") if isinstance(rev,dict) else "sin dato"}% · {p.get("estado_respaldo") or "Sin clasificación histórica"}')
-            st.divider()
-            continue
-        if not any(e.aviso in {v.aviso for v in filtrados} for e in origen):continue
+            sin_activos+=1;continue
+        if any(p.get('estado_ejecucion') != 'Ejecutado verificado' for p in activos):
+            pendientes+=1;continue
         inicio=_fecha_ejecucion(activos)
-        if not inicio:
-            excluidos['sin_fecha']+=1
-            st.info('Planes activos completos, pero falta fecha de ejecución verificable. '
-                    'No se puede iniciar el cómputo de días de observación.')
-            st.divider()
-            continue
-        modos={e.modo for e in origen if e.modo and e.modo!='Sin clasificar'}
-        if not modos:
-            excluidos['sin_vinculo']+=1
-            st.info('Falta identificar el modo de falla de los avisos vinculados.')
-            st.divider()
-            continue
-        asociados=[e for e in avisos if e.equipo_codigo==origen[0].equipo_codigo and e.modo in modos]
-        plazo,confianza,razon=plazo_sugerido([e for e in asociados if e.fecha<=inicio])
-        corte=min(ultima,dt.date.today()) if ultima else inicio
-        dias=max(0,(corte-inicio).days)
-        posteriores=[e for e in asociados if inicio<e.fecha<=corte]
-        visibles+=1
-        st.markdown(f'**ADF #{adf.id} · {adf.equipo} · {", ".join(sorted(modos))}**')
-        st.progress(min(1.,dias/max(plazo,1)))
-        st.caption(f'{dias} / {plazo} días observados · {max(0,plazo-dias)} restantes · Confianza {confianza}')
-        st.markdown('**Calidad de respaldos de los planes**')
-        for ix, plan in enumerate(activos, 1):
-            rev = plan.get('revision_ia') or {}
-            porcentaje = rev.get('confianza') if isinstance(rev, dict) else None
-            estado_respaldo = plan.get('estado_respaldo') or 'Sin clasificación histórica'
-            st.caption(f'Plan {ix}: {estado_respaldo} · Confianza IA: {porcentaje if porcentaje is not None else "sin dato"}%')
-            conf = plan.get('confirmacion_mantenimiento') or {}
-            if isinstance(conf, dict) and conf.get('fecha_programada'):
-                if conf.get('ejecutado'):
-                    st.success(f'Plan {ix}: ejecución posterior del mantenimiento confirmada (OT: {conf.get("ot_sap") or "sin OT"}).')
-                else:
-                    st.warning(f'Plan {ix}: mantenimiento programado para {conf["fecha_programada"]}, pendiente de confirmar ejecución. La creación del plan ADF ya fue cumplida.')
-
-        if observados:
-            st.warning(f'{len(observados)} plan(es) aprobado(s) con observaciones. '
-                       'La ejecución está completa; revisar estas observaciones al evaluar reincidencias.')
-            with st.expander('Observaciones de respaldos aprobados'):
-                for nombre, nota in observados:st.write(f'**{nombre}:** {nota}')
-        if posteriores:
-            st.error(f'{len(posteriores)} posible(s) reincidencia(s) detectada(s): revisar que correspondan a la misma causa.')
-            with st.expander('Revisar nuevos antecedentes'):
-                for e in posteriores:st.write(f'{e.fecha:%d/%m/%Y} · {e.aviso} · {_resumen(e)}')
-                if st.button('Preparar reapertura',key=f'hf_reabrir_v3_{adf.id}'):
-                    st.session_state['historial_reapertura_propuesta']={'adf_id':adf.id,'avisos':[e.aviso for e in posteriores]}
-                    st.warning('Antecedentes preparados. No se modificó el ADF: falta conectar el flujo de reapertura.')
-        elif dias<plazo:st.info('En observación, sin reincidencias similares en los avisos cargados.')
-        elif confianza in ('baja','muy baja'):st.warning('Período cumplido; evidencia insuficiente para demostrar efectividad.')
-        else:st.success('Sin reincidencias similares durante el período observado. Revisar exposición y control antes de cerrar efectividad.')
-        with st.expander('Fundamento del plazo'):st.write(razon)
-        st.divider()
-    if not visibles:st.info('No hay ADF con seguimiento temporal calculable para los filtros seleccionados. '
-                             'Los ADF con planes activos completos se muestran arriba, '
-                             'aunque todavía falten vínculos o fechas.')
-    with st.expander('Diagnóstico de ADF no elegibles'):
-        st.write(f'ADF con planes aún sin ejecutar/verificar: {excluidos["pendientes"]}')
-        st.write(f'ADF sin planes estructurados: {excluidos["sin_planes"]}')
-        st.write(f'ADF con todos sus planes cancelados/archivados (requieren revisión): {excluidos["sin_activos"]}')
-        st.write(f'ADF sin aviso SAP coincidente: {excluidos["sin_vinculo"]}')
-        st.write(f'ADF sin fecha de ejecución verificada: {excluidos["sin_fecha"]}')
-        st.caption('Si el ADF esperado no aparece, revisa el estado real de cada plan y su número de aviso SAP. No se alteraron estados ni validaciones.')
+        ids=por_adf.get(adf.id,{})
+        origen=next((por_aviso[x] for x in ids.get('origen',[]) if x in por_aviso),None)
+        directo=[e for e in avisos if str(e.aviso) in _avisos_adf(adf)]
+        if origen is None and len(directo)==1:
+            origen=directo[0]
+        candidatos=_origen_candidatos(adf,avisos) if origen is None else []
+        if origen and inicio:
+            asociados=[e for e in avisos if e.equipo_codigo==origen.equipo_codigo and e.modo==origen.modo and e.fecha<=inicio]
+            plazo,confianza,razon=plazo_sugerido(asociados)
+            plazo=max(1,int(plazo))
+            corte=min(dt.date.today(),ultima) if ultima else inicio
+            transcurridos=max(0,(corte-inicio).days)
+            hallados=_reincidencias(origen,avisos,inicio,plazo,set(ids.get('reincidencia',[])))
+            confirmados=[x for x in hallados if x[2]]
+            sospechas=[x for x in hallados if not x[2]]
+            estado='Reincidencia' if confirmados else ('Por verificar' if sospechas else ('Efectivo' if transcurridos>=plazo and ultima and ultima>=inicio+dt.timedelta(days=plazo) else 'En evaluación'))
+        else:
+            plazo=transcurridos=0;confianza='';razon='';hallados=[];sospechas=[];confirmados=[]
+            estado='Sin fecha' if origen else 'Vincular origen'
+        registros.append((adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,transcurridos,estado,razon,sospechas,confirmados,ids))
+    counts={k:sum(1 for r in registros if r[9]==k) for k in ('En evaluación','Efectivo','Reincidencia')}
+    c1,c2,c3=st.columns(3)
+    c1.metric('En evaluación',counts['En evaluación'])
+    c2.metric('Período cumplido',counts['Efectivo'])
+    c3.metric('Reincidencias confirmadas',counts['Reincidencia'])
+    st.caption('Período cumplido = sin reincidencias detectadas en los avisos SAP importados hasta el fin del plazo. No garantiza ausencia de fallas no registradas.')
+    if ultima:st.caption(f'Última fecha de datos SAP: {ultima:%d/%m/%Y}')
+    filtro=st.selectbox('Mostrar',['Todos','En evaluación','Efectivo','Reincidencia','Por verificar','Vincular origen','Sin fecha'],key='hf_ef_filtro_v15')
+    for adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,dias,estado,razon,sospechas,confirmados,ids in registros:
+        if filtro!='Todos' and filtro!=estado:continue
+        with st.container(border=True):
+            cab,est=st.columns([4,1])
+            cab.markdown(f'**ADF #{adf.id} · {adf.equipo}**')
+            est.markdown({'Efectivo':'🟢','Reincidencia':'🔴','En evaluación':'🟡','Por verificar':'🟠'}.get(estado,'⚪')+' **'+estado+'**')
+            if origen:
+                st.caption(f'Aviso de origen: {origen.aviso} · {origen.fecha:%d/%m/%Y} · TP {origen.tp_min:g} min')
+            if inicio and origen:
+                color='🔴' if estado=='Reincidencia' else '🟢' if estado=='Efectivo' else '🟡'
+                st.markdown(f'{color} **{min(dias,plazo)} / {plazo} días evaluados** · {max(0,plazo-dias)} restantes')
+                st.progress(min(1.0,dias/plazo))
+                if ultima and ultima < dt.date.today():
+                    st.caption('Avance calculado hasta la última importación SAP, no hasta hoy.')
+                if estado=='Efectivo':st.success('Plazo cumplido sin reincidencias similares detectadas en el historial cargado.')
+            elif not inicio:
+                st.warning('Falta fecha de ejecución verificable en los planes activos; no se inicia el conteo.')
+            if cancelados or archivados:
+                st.caption(f'{len(activos)} plan(es) activo(s) verificado(s) · {len(cancelados)} cancelado(s) · {len(archivados)} archivado(s)')
+            if not origen:
+                if candidatos:
+                    st.info('Aviso SAP de origen sugerido automáticamente. Confirma antes de asociarlo.')
+                    for score,e in candidatos[:3]:
+                        st.caption(f'{e.aviso} · {e.fecha:%d/%m/%Y} · TP {e.tp_min:g} min · coincidencia {score:.0%} · {_resumen(e)[:140]}')
+                    if autorizado:
+                        opcion=st.selectbox('Aviso de origen a confirmar',['Seleccionar']+[str(e.aviso) for _,e in candidatos],key=f'ef_origen_{adf.id}')
+                        if st.button('Confirmar aviso de origen',key=f'ef_confirmar_origen_{adf.id}',disabled=opcion=='Seleccionar'):
+                            try:
+                                confirmar_vinculo(adf.id,opcion,'origen',usuario,'Cruce SAP validado por usuario')
+                                st.rerun()
+                            except Exception as exc:st.error(str(exc))
+                else:st.warning('Sin coincidencia SAP suficientemente cercana por equipo y fecha. Revisa los datos importados.')
+            if sospechas:
+                st.warning(f'{len(sospechas)} posible(s) reincidencia(s). Requieren confirmación antes de marcar el ADF en rojo.')
+                for e,sim,_ in sospechas:
+                    with st.expander(f'Aviso {e.aviso} · {e.fecha:%d/%m/%Y} · similitud {sim:.0%}'):
+                        st.write(_resumen(e))
+                        if autorizado and st.button('Confirmar reincidencia y vincular',key=f'ef_vincular_{adf.id}_{e.aviso}'):
+                            try:
+                                confirmar_vinculo(adf.id,e.aviso,'reincidencia',usuario,'Reincidencia confirmada tras revisión')
+                                st.rerun()
+                            except Exception as exc:st.error(str(exc))
+            if confirmados:
+                st.error('Reincidencia confirmada dentro del plazo. Se conservan los avisos vinculados.')
+                for e,sim,_ in confirmados:st.caption(f'🔗 Aviso {e.aviso} · {e.fecha:%d/%m/%Y} · {_resumen(e)[:140]}')
+                st.info('Puedes reabrir el ADF para corregir su análisis. Se conservan planes, evidencias y avisos vinculados; se registra auditoría.')
+                if autorizado:
+                    confirmacion=st.checkbox('Confirmo que deseo reabrir este ADF y devolverlo a corrección',key=f'ef_check_reabrir_{adf.id}')
+                    if st.button('Reabrir ADF',key=f'ef_reabrir_{adf.id}',disabled=not confirmacion):
+                        try:
+                            reabrir_adf_por_reincidencia(adf.id,usuario)
+                            st.session_state['historial_reapertura_propuesta']={'adf_id':adf.id,'avisos':ids.get('reincidencia',[])}
+                            st.success('ADF reabierto y registrado en historial de validación.')
+                            st.rerun()
+                        except Exception as exc:st.error(str(exc))
+            with st.expander('Detalles de seguimiento y justificaciones'):
+                if razon:st.write('**Fundamento del plazo:**',razon)
+                for plan in cancelados+archivados:
+                    st.write('**Plan no ejecutado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
+                    for audit in plan.get('auditoria_administrativa') or []:
+                        st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
+    if not registros:st.info('No hay ADF con planes activos completamente verificados.')
+    with st.expander('Diagnóstico de elegibilidad'):
+        st.write(f'Sin planes: {sin_planes} · Sin planes activos: {sin_activos} · Pendientes de ejecución/verificación: {pendientes}')
 
 
 def mostrar_historial_reincidencias():
