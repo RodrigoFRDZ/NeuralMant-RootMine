@@ -20,7 +20,7 @@ from modulos.planes_accion import mostrar_planes_accion
 from modulos.inicio import mostrar_inicio, mostrar_rootmine
 from modulos.nuevo_adf import mostrar_nuevo_adf, cargar_borrador_para_continuar
 from modulos.validaciones import mostrar_validaciones
-from modulos.notificaciones import mostrar_campana, mostrar_aviso_materiales
+from modulos.notificaciones import mostrar_campana
 from modulos.navegacion_materiales import abrir_material_desde_url
 from modulos.administracion import mostrar_administracion
 from modulos.materiales import mostrar_materiales
@@ -519,7 +519,6 @@ def main() -> None:
         _desplazar_inicio_al_cambiar_modulo()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
-    mostrar_aviso_materiales(st.session_state.usuario_actual)
     eleccion_materiales = st.session_state.pop("mat_eleccion_vista", False)
     if pagina == "📦 Gestión de Materiales" and st.session_state.get("_pagina_renderizada") != pagina and not st.session_state.get("mat_solicitud_enlace") and not eleccion_materiales:
         st.session_state["mat_vista"] = None
