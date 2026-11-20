@@ -50,7 +50,8 @@ def _clasificar_planes(planes):
     """Los planes archivados/cancelados no son ejecutados ni pendientes activos."""
     activos, cancelados, archivados = [], [], []
     for p in planes:
-        if p.get("eliminado_administrador") or p.get("estado_administrativo") == "Eliminado":
+        if (p.get("eliminado_administrador") or
+                str(p.get("estado_administrativo") or "").strip().lower() in {"eliminado", "archivado", "eliminado (archivado)"}):
             archivados.append(p)
         elif p.get("estado_administrativo") == "Cancelado":
             cancelados.append(p)
@@ -285,10 +286,11 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             sin_activos+=1;continue
         if any(p.get('estado_ejecucion') != 'Ejecutado verificado' for p in activos):
             pendientes+=1;continue
-        inicio=_fecha_ejecucion(activos)
+        inicio_automatico=_fecha_ejecucion(activos)
         fecha_evento_manual, inicio_manual = fechas_manuales.get(adf.id, (None,None))
-        if inicio is None:
-            inicio=inicio_manual
+        # La fecha manual es la fecha REAL confirmada, por encima de una
+        # fecha estimada o del día de validación que el flujo haya guardado.
+        inicio=inicio_manual or inicio_automatico
         ids=por_adf.get(adf.id,{})
         origen=next((por_aviso[x] for x in ids.get('origen',[]) if x in por_aviso),None)
         ids_adf=_avisos_adf(adf)
@@ -301,7 +303,9 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             asociados=[e for e in avisos if e.equipo_codigo==origen.equipo_codigo and e.modo==origen.modo and e.fecha<=inicio]
             plazo,confianza,razon=plazo_sugerido(asociados)
             plazo=max(1,int(plazo))
-            corte=min(dt.date.today(),ultima) if ultima else inicio
+            # Solo se evalúan días respaldados por el historial SAP importado.
+            # No avanzar a la fecha actual si no hay importación nueva.
+            corte=ultima if ultima else inicio
             transcurridos=max(0,(corte-inicio).days)
             hallados=_reincidencias(origen,[e for e in avisos if ultima and e.fecha <= ultima],inicio,plazo,set(ids.get('reincidencia',[])))
             confirmados=[x for x in hallados if x[2]]
@@ -335,23 +339,38 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             if inicio and origen:
                 color='🔴' if estado=='Reincidencia' else '🟢' if estado=='Efectivo' else '🟡'
                 st.markdown(f'{color} **{min(dias,plazo)} / {plazo} días evaluados** · {max(0,plazo-dias)} restantes')
+                st.caption(f'Inicio de efectividad: {inicio:%d/%m/%Y}' +
+                           (' · Fecha confirmada manualmente' if fechas_manuales.get(adf.id,(None,None))[1] else
+                            ' · Fecha registrada en el plan (verificar si es real)'))
                 st.progress(min(1.0,dias/plazo))
-                if ultima and ultima < dt.date.today():
-                    st.caption('Avance calculado hasta la última importación SAP, no hasta hoy.')
+                if ultima:
+                    st.caption(f'Fecha de corte SAP: {ultima:%d/%m/%Y}. El contador no avanza más allá de esa fecha.')
+                    if inicio > ultima:
+                        st.info('La ejecución del último plan es posterior a la fecha de corte SAP. '
+                                'Por eso aparecen 0 días evaluados; importa avisos SAP más recientes '
+                                'o corrige la fecha de ejecución si está equivocada.')
                 if estado=='Efectivo':st.success('Plazo cumplido sin reincidencias similares detectadas en el historial cargado.')
             elif not inicio:
                 st.warning('Falta fecha de ejecución verificable en los planes activos; no se inicia el conteo.')
+            # No mostrar archivados/eliminados en ningún contador ni detalle de efectividad.
+            # La auditoría de eliminación permanece únicamente en administración.
+            st.caption(f'{len(activos)} plan(es) activo(s) ejecutado(s) y verificado(s)')
             if cancelados:
-                st.caption(f'{len(activos)} plan(es) activo(s) verificado(s) · {len(cancelados)} cancelado(s)')
-            if autorizado and (not origen or not inicio):
-                with st.expander('Registrar fecha faltante (manual)'):
-                    st.caption('La fecha del evento es la falla original; el inicio de efectividad corresponde a la ejecución real del último plan activo, no a la creación del ADF.')
-                    sugerida=fecha_evento_manual or _fecha_adf(adf) or dt.date.today()
-                    fecha_evento=st.date_input('Fecha real de la falla',value=sugerida,key=f'ef_fecha_evento_{adf.id}')
-                    sin_inicio=not _fecha_ejecucion(activos)
-                    inicio_sugerido=fechas_manuales.get(adf.id,(None,None))[1] or fecha_evento
-                    fecha_inicio=st.date_input('Fecha real de implementación del último plan',value=inicio_sugerido,key=f'ef_inicio_{adf.id}') if sin_inicio else None
-                    if st.button('Guardar fechas',key=f'ef_guardar_fechas_{adf.id}'):
+                st.caption(f'{len(cancelados)} plan(es) cancelado(s) con justificación')
+            if autorizado:
+                with st.expander('Verificar o corregir fechas del ADF', expanded=False):
+                    st.caption('La falla original sirve para identificar el aviso SAP. '
+                               'El período de efectividad empieza al implementar realmente '
+                               'el último plan activo, no al crear el ADF ni al subir su respaldo.')
+                    sugerida=fecha_evento_manual or (origen.fecha if origen else None) or _fecha_adf(adf) or dt.date.today()
+                    fecha_evento=st.date_input('Fecha real de la falla original',value=sugerida,key=f'ef_fecha_evento_{adf.id}')
+                    inicio_sugerido=inicio or fecha_evento
+                    fecha_inicio=st.date_input('Fecha real de implementación del último plan activo',
+                                               value=inicio_sugerido,key=f'ef_inicio_{adf.id}')
+                    if ultima:
+                        st.caption(f'Último dato SAP disponible: {ultima:%d/%m/%Y}. '
+                                   'Si el plan se implementó después, habrá 0 días evaluados hasta importar datos posteriores.')
+                    if st.button('Guardar fechas verificadas',key=f'ef_guardar_fechas_{adf.id}'):
                         try:
                             guardar_fechas_manuales(adf.id,usuario,fecha_evento,fecha_inicio)
                             st.success('Fechas registradas con trazabilidad.');st.rerun()
@@ -393,12 +412,15 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                             st.success('ADF reabierto y registrado en historial de validación.')
                             st.rerun()
                         except Exception as exc:st.error(str(exc))
-            with st.expander('Detalles de seguimiento y justificaciones'):
-                if razon:st.write('**Fundamento del plazo:**',razon)
-                for plan in cancelados:
-                    st.write('**Plan no ejecutado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
-                    for audit in plan.get('auditoria_administrativa') or []:
-                        st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
+            # Detalles exclusivamente técnicos; no mostrar planes eliminados.
+            if razon or cancelados:
+                with st.expander('Detalles del seguimiento'):
+                    if razon:
+                        st.write('**Fundamento del plazo:**',razon)
+                    for plan in cancelados:
+                        st.write('**Plan cancelado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
+                        for audit in plan.get('auditoria_administrativa') or []:
+                            st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')
     if not registros:st.info('No hay ADF con planes activos completamente verificados.')
     with st.expander('Diagnóstico de elegibilidad'):
         st.write(f'Sin planes: {sin_planes} · Sin planes activos: {sin_activos} · Pendientes de ejecución/verificación: {pendientes}')
