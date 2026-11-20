@@ -367,6 +367,8 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             plazo=transcurridos=0;confianza='';razon='';hallados=[];sospechas=[];confirmados=[]
             estado='Sin fecha' if origen else 'Vincular origen'
         registros.append((adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,transcurridos,estado,razon,sospechas,confirmados,ids,fecha_evento_manual))
+    st.markdown('### 🎯 Evaluación de efectividad por fenómeno de falla')
+    st.caption('El plazo se fundamenta en eventos equivalentes, no en todas las fallas del equipo.')
     counts={k:sum(1 for r in registros if r[9]==k) for k in ('En evaluación','Efectivo','Reincidencia')}
     c1,c2,c3=st.columns(3)
     c1.metric('En evaluación',counts['En evaluación'])
@@ -537,6 +539,7 @@ def mostrar_historial_reincidencias():
     if any(e.area == 'Sin área asignada' and getattr(e,'centro_costo','') for e in avisos):
         st.info('Existen centros de costo no incluidos en la tabla de equivalencias; revisa el mapeo de CeCo.')
     st.title('📈 Historial de Fallas y Reincidencias')
+    st.caption('Interfaz de efectividad · v16.5 · actualización visual')
     st.caption('Historia de equipos · TOP 5 de patrones repetitivos · Seguimiento ADF')
     st.info(f'Historial SAP actualizado hasta {ultima:%d/%m/%Y}' if ultima else 'Todavía no hay avisos SAP importados.')
     filtrados=_filtros_visuales(avisos)
