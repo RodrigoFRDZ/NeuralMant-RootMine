@@ -8,7 +8,7 @@ import html
 import math
 import unicodedata
 from difflib import SequenceMatcher
-from database.vinculos_efectividad import obtener_vinculos, confirmar_vinculo, reabrir_adf_por_reincidencia
+from database.vinculos_efectividad import obtener_vinculos, confirmar_vinculo, reabrir_adf_por_reincidencia, obtener_fechas_manuales, guardar_fechas_manuales
 from collections import defaultdict
 
 from sqlalchemy.orm import Session
@@ -216,8 +216,8 @@ def _fecha_adf(adf):
     return None
 
 
-def _origen_candidatos(adf, avisos):
-    fecha = _fecha_adf(adf)
+def _origen_candidatos(adf, avisos, fecha_manual=None):
+    fecha = fecha_manual or _fecha_adf(adf)
     equipo = _normalizar(getattr(adf,'numero_equipo',''))
     tp_adf = float(getattr(adf,'tiempo_perdido_h',0) or 0) * 60
     relato = ' '.join(str(getattr(adf,k,'') or '') for k in ('relato_original','efecto','equipo'))
@@ -266,6 +266,11 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
     except Exception as exc:
         st.error(f'No fue posible leer los vínculos de efectividad: {exc}')
         return
+    try:
+        fechas_manuales=obtener_fechas_manuales()
+    except Exception as exc:
+        st.error(f'No se pudieron leer las fechas manuales: {exc}')
+        return
     por_adf={}
     for aid,aviso,tipo,autor,nota in vinculos:
         por_adf.setdefault(aid,{}).setdefault(tipo,[]).append(aviso)
@@ -281,26 +286,31 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         if any(p.get('estado_ejecucion') != 'Ejecutado verificado' for p in activos):
             pendientes+=1;continue
         inicio=_fecha_ejecucion(activos)
+        fecha_evento_manual, inicio_manual = fechas_manuales.get(adf.id, (None,None))
+        if inicio is None:
+            inicio=inicio_manual
         ids=por_adf.get(adf.id,{})
         origen=next((por_aviso[x] for x in ids.get('origen',[]) if x in por_aviso),None)
-        directo=[e for e in avisos if str(e.aviso) in _avisos_adf(adf)]
+        ids_adf=_avisos_adf(adf)
+        directo=[e for e in avisos if str(e.aviso) in ids_adf]
         if origen is None and len(directo)==1:
             origen=directo[0]
-        candidatos=_origen_candidatos(adf,avisos) if origen is None else []
+        # Si el ADF ya registra aviso SAP, es la fuente principal, no inferir otro.
+        candidatos=_origen_candidatos(adf,avisos,fecha_evento_manual) if origen is None and not ids_adf else []
         if origen and inicio:
             asociados=[e for e in avisos if e.equipo_codigo==origen.equipo_codigo and e.modo==origen.modo and e.fecha<=inicio]
             plazo,confianza,razon=plazo_sugerido(asociados)
             plazo=max(1,int(plazo))
             corte=min(dt.date.today(),ultima) if ultima else inicio
             transcurridos=max(0,(corte-inicio).days)
-            hallados=_reincidencias(origen,avisos,inicio,plazo,set(ids.get('reincidencia',[])))
+            hallados=_reincidencias(origen,[e for e in avisos if ultima and e.fecha <= ultima],inicio,plazo,set(ids.get('reincidencia',[])))
             confirmados=[x for x in hallados if x[2]]
             sospechas=[x for x in hallados if not x[2]]
             estado='Reincidencia' if confirmados else ('Por verificar' if sospechas else ('Efectivo' if transcurridos>=plazo and ultima and ultima>=inicio+dt.timedelta(days=plazo) else 'En evaluación'))
         else:
             plazo=transcurridos=0;confianza='';razon='';hallados=[];sospechas=[];confirmados=[]
             estado='Sin fecha' if origen else 'Vincular origen'
-        registros.append((adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,transcurridos,estado,razon,sospechas,confirmados,ids))
+        registros.append((adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,transcurridos,estado,razon,sospechas,confirmados,ids,fecha_evento_manual))
     counts={k:sum(1 for r in registros if r[9]==k) for k in ('En evaluación','Efectivo','Reincidencia')}
     c1,c2,c3=st.columns(3)
     c1.metric('En evaluación',counts['En evaluación'])
@@ -309,7 +319,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
     st.caption('Período cumplido = sin reincidencias detectadas en los avisos SAP importados hasta el fin del plazo. No garantiza ausencia de fallas no registradas.')
     if ultima:st.caption(f'Última fecha de datos SAP: {ultima:%d/%m/%Y}')
     filtro=st.selectbox('Mostrar',['Todos','En evaluación','Efectivo','Reincidencia','Por verificar','Vincular origen','Sin fecha'],key='hf_ef_filtro_v15')
-    for adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,dias,estado,razon,sospechas,confirmados,ids in registros:
+    for adf,activos,cancelados,archivados,inicio,origen,candidatos,plazo,dias,estado,razon,sospechas,confirmados,ids,fecha_evento_manual in registros:
         if filtro!='Todos' and filtro!=estado:continue
         with st.container(border=True):
             cab,est=st.columns([4,1])
@@ -317,6 +327,11 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             est.markdown({'Efectivo':'🟢','Reincidencia':'🔴','En evaluación':'🟡','Por verificar':'🟠'}.get(estado,'⚪')+' **'+estado+'**')
             if origen:
                 st.caption(f'Aviso de origen: {origen.aviso} · {origen.fecha:%d/%m/%Y} · TP {origen.tp_min:g} min')
+            elif _avisos_adf(adf):
+                st.caption('Aviso registrado en ADF: ' + ', '.join(sorted(_avisos_adf(adf))))
+                st.warning('El aviso indicado en el ADF no está en los datos SAP importados. No se sustituye por otro aviso automáticamente.')
+            if fecha_evento_manual and not origen:
+                st.caption(f'Fecha del evento registrada manualmente: {fecha_evento_manual:%d/%m/%Y}')
             if inicio and origen:
                 color='🔴' if estado=='Reincidencia' else '🟢' if estado=='Efectivo' else '🟡'
                 st.markdown(f'{color} **{min(dias,plazo)} / {plazo} días evaluados** · {max(0,plazo-dias)} restantes')
@@ -326,8 +341,21 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                 if estado=='Efectivo':st.success('Plazo cumplido sin reincidencias similares detectadas en el historial cargado.')
             elif not inicio:
                 st.warning('Falta fecha de ejecución verificable en los planes activos; no se inicia el conteo.')
-            if cancelados or archivados:
-                st.caption(f'{len(activos)} plan(es) activo(s) verificado(s) · {len(cancelados)} cancelado(s) · {len(archivados)} archivado(s)')
+            if cancelados:
+                st.caption(f'{len(activos)} plan(es) activo(s) verificado(s) · {len(cancelados)} cancelado(s)')
+            if autorizado and (not origen or not inicio):
+                with st.expander('Registrar fecha faltante (manual)'):
+                    st.caption('La fecha del evento es la falla original; el inicio de efectividad corresponde a la ejecución real del último plan activo, no a la creación del ADF.')
+                    sugerida=fecha_evento_manual or _fecha_adf(adf) or dt.date.today()
+                    fecha_evento=st.date_input('Fecha real de la falla',value=sugerida,key=f'ef_fecha_evento_{adf.id}')
+                    sin_inicio=not _fecha_ejecucion(activos)
+                    inicio_sugerido=fechas_manuales.get(adf.id,(None,None))[1] or fecha_evento
+                    fecha_inicio=st.date_input('Fecha real de implementación del último plan',value=inicio_sugerido,key=f'ef_inicio_{adf.id}') if sin_inicio else None
+                    if st.button('Guardar fechas',key=f'ef_guardar_fechas_{adf.id}'):
+                        try:
+                            guardar_fechas_manuales(adf.id,usuario,fecha_evento,fecha_inicio)
+                            st.success('Fechas registradas con trazabilidad.');st.rerun()
+                        except Exception as exc:st.error(str(exc))
             if not origen:
                 if candidatos:
                     st.info('Aviso SAP de origen sugerido automáticamente. Confirma antes de asociarlo.')
@@ -340,7 +368,8 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                                 confirmar_vinculo(adf.id,opcion,'origen',usuario,'Cruce SAP validado por usuario')
                                 st.rerun()
                             except Exception as exc:st.error(str(exc))
-                else:st.warning('Sin coincidencia SAP suficientemente cercana por equipo y fecha. Revisa los datos importados.')
+                elif not _avisos_adf(adf):
+                    st.info('Este ADF no tiene aviso SAP. Registra la fecha manual y vincula el aviso cuando exista.')
             if sospechas:
                 st.warning(f'{len(sospechas)} posible(s) reincidencia(s). Requieren confirmación antes de marcar el ADF en rojo.')
                 for e,sim,_ in sospechas:
@@ -366,7 +395,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                         except Exception as exc:st.error(str(exc))
             with st.expander('Detalles de seguimiento y justificaciones'):
                 if razon:st.write('**Fundamento del plazo:**',razon)
-                for plan in cancelados+archivados:
+                for plan in cancelados:
                     st.write('**Plan no ejecutado:**',plan.get('accion') or plan.get('titulo') or 'Sin título')
                     for audit in plan.get('auditoria_administrativa') or []:
                         st.caption(f'{audit.get("motivo","")} · {audit.get("justificacion","")}')

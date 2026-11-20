@@ -13,7 +13,6 @@ from database.sesiones import crear_sesion, validar_y_tocar_sesion, cerrar_sesio
 from ia.cliente import obtener_configuracion
 from modulos.acerca import mostrar_acerca
 from modulos.historial import mostrar_historial
-from modulos.historial_reincidencias import mostrar_historial_reincidencias
 from modulos.base_conocimiento import mostrar_base_conocimiento
 from modulos.indicadores import mostrar_indicadores
 from modulos.planes_accion import mostrar_planes_accion
@@ -123,7 +122,7 @@ def barra_inicio(pagina: str) -> None:
             st.session_state.pop("nuevo_adf", None)
             st.rerun()
     with col_ruta:
-        if pagina in ("📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📈 Historial de Fallas y Reincidencias", "🧠 Base de conocimiento"):
+        if pagina in ("📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"):
             if st.button("← Panel RootMine", key="volver_rootmine"):
                 st.session_state.pagina = "🧠 RootMine"
                 st.rerun()
@@ -410,14 +409,14 @@ def mostrar_identificacion() -> None:
 
 def _opciones_navegacion(usuario, pagina):
     opciones = ["🏠 Dashboard", "🧠 RootMine", "📦 Gestión de Materiales", "🛠️ Seguimiento de trabajos"]
-    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "📈 Historial de Fallas y Reincidencias", "🧠 Base de conocimiento"]
+    rootmine = ["📝 RootMine · Nuevo ADF", "✅ Validaciones", "📋 Planes de acción", "📚 Historial", "📊 Indicadores", "🧠 Base de conocimiento"]
     if pagina in ["🧠 RootMine", *rootmine]:
         opciones[2:2] = rootmine
     if pagina in ("📦 Gestión de Materiales", "✅ Aprobaciones de materiales") and (usuario.get("es_admin") or usuario.get("rol") in ("jefe", "ingeniero", "analizador_materiales", "subgerente")):
         opciones.append("✅ Aprobaciones de materiales")
     if gestion_autorizado(usuario):
         opciones.append("🔒 Mi Gestión")
-    if usuario.get("es_admin") and pagina == "👥 Administración de cuentas":
+    if usuario.get("es_admin"):
         opciones.append("👥 Administración de cuentas")
     opciones.append("ℹ️ Acerca de")
     return opciones
@@ -460,6 +459,36 @@ def mostrar_menu() -> str:
         return pagina
 
 
+def _desplazar_inicio_al_cambiar_modulo() -> None:
+    """Subir al inicio solo al navegar, no al actualizar controles."""
+    import streamlit.components.v1 as components
+    components.html(
+        """<script>
+        (function () {
+          function arriba() {
+            try {
+              const p = window.parent;
+              const d = p.document;
+              [d.querySelector('[data-testid="stAppViewContainer"]'),
+               d.querySelector('[data-testid="stMain"]'),
+               d.querySelector('section.main'), d.scrollingElement]
+                .forEach(function(el) {
+                  if (el) {
+                    el.scrollTop = 0;
+                    if (el.scrollTo) el.scrollTo({top:0,left:0,behavior:'instant'});
+                  }
+                });
+              p.scrollTo(0, 0);
+            } catch (e) { /* Evitar que un bloqueo del iframe rompa la app */ }
+          }
+          arriba();
+          requestAnimationFrame(arriba);
+          setTimeout(arriba, 150);
+        })();
+        </script>""", height=0, width=0,
+    )
+
+
 def main() -> None:
     cargar_estilos()
     preparar_backend()
@@ -483,8 +512,13 @@ def main() -> None:
                 cerrar_sesion_rootmine()
                 st.rerun()
     pagina = mostrar_menu()
+    pagina_anterior = st.session_state.get("_scroll_modulo_anterior")
+    if pagina_anterior != pagina:
+        st.session_state["_scroll_modulo_anterior"] = pagina
+        _desplazar_inicio_al_cambiar_modulo()
     _persistir_contexto_navegacion(pagina)
     barra_inicio(pagina)
+    mostrar_aviso_materiales(st.session_state.usuario_actual)
     eleccion_materiales = st.session_state.pop("mat_eleccion_vista", False)
     if pagina == "📦 Gestión de Materiales" and st.session_state.get("_pagina_renderizada") != pagina and not st.session_state.get("mat_solicitud_enlace") and not eleccion_materiales:
         st.session_state["mat_vista"] = None
@@ -496,7 +530,6 @@ def main() -> None:
     elif pagina == "📋 Planes de acción": mostrar_planes_accion()
     elif pagina == "📚 Historial": mostrar_historial()
     elif pagina == "📊 Indicadores": mostrar_indicadores()
-    elif pagina == "📈 Historial de Fallas y Reincidencias": mostrar_historial_reincidencias()
     elif pagina == "📦 Gestión de Materiales": mostrar_materiales()
     elif pagina == "🛠️ Seguimiento de trabajos": mostrar_trabajos()
     elif pagina == "✅ Aprobaciones de materiales":

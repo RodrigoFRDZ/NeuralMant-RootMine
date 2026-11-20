@@ -1,6 +1,6 @@
 """Vínculos SAP-ADF auditables. No modifica la tabla ADF ni los avisos históricos."""
-from datetime import datetime
-from sqlalchemy import Integer, String, DateTime, Text, ForeignKey, select
+from datetime import datetime, date
+from sqlalchemy import Integer, String, DateTime, Date, Text, ForeignKey, select
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from database.modelos import Base, ADF
 from database.conexion import engine
@@ -16,8 +16,51 @@ class VinculoEfectividad(Base):
     comentario: Mapped[str] = mapped_column(Text, default='')
 
 
+class FechaManualADF(Base):
+    __tablename__ = 'historial_fecha_manual_adf'
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    adf_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    fecha_evento: Mapped[date] = mapped_column(Date, nullable=False)
+    fecha_inicio: Mapped[date | None] = mapped_column(Date, nullable=True)
+    actualizado_por: Mapped[str] = mapped_column(String(180), default='')
+    fecha_actualizacion: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+def obtener_fechas_manuales():
+    preparar()
+    with Session(engine) as db:
+        return {f.adf_id: (f.fecha_evento, f.fecha_inicio)
+                for f in db.scalars(select(FechaManualADF)).all()}
+
+
+def guardar_fechas_manuales(adf_id, usuario, fecha_evento, fecha_inicio=None):
+    if not usuario or not (usuario.get('es_admin') or usuario.get('rol') in
+                            ('jefe','subgerente','supervisor','ingeniero','ingeniero_confiabilidad')):
+        raise PermissionError('Usuario no autorizado')
+    correo = str(usuario.get('correo') or usuario.get('email') or '').strip()
+    if not correo:
+        raise PermissionError('Se requiere correo identificado')
+    if not fecha_evento:
+        raise ValueError('La fecha del evento es obligatoria')
+    if fecha_inicio and fecha_inicio < fecha_evento:
+        raise ValueError('La fecha de inicio de efectividad no puede ser anterior al evento')
+    preparar()
+    with Session(engine) as db:
+        if db.get(ADF, int(adf_id)) is None:
+            raise ValueError('ADF inexistente')
+        obj=db.scalar(select(FechaManualADF).where(FechaManualADF.adf_id==int(adf_id)))
+        if obj is None:
+            obj=FechaManualADF(adf_id=int(adf_id),fecha_evento=fecha_evento)
+            db.add(obj)
+        obj.fecha_evento=fecha_evento
+        obj.fecha_inicio=fecha_inicio
+        obj.actualizado_por=correo
+        obj.fecha_actualizacion=datetime.utcnow()
+        db.commit()
+
+
 def preparar():
-    Base.metadata.create_all(engine, tables=[VinculoEfectividad.__table__])
+    Base.metadata.create_all(engine, tables=[VinculoEfectividad.__table__, FechaManualADF.__table__])
 
 
 def obtener_vinculos():
