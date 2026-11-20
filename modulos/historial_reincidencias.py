@@ -387,7 +387,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             fenomeno = ' '.join(str(getattr(adf, 'conclusion', '') or '').split())
             st.markdown(
                 '<div style="font-size:.75rem;color:#91a9bf;font-weight:700;'
-                'letter-spacing:.07em;margin-top:.45rem">FENÓMENO ANALIZADO</div>'
+                'letter-spacing:.07em;margin-top:.45rem">CONCLUSIÓN DEL ADF</div>'
                 '<div style="font-size:1.02rem;font-weight:600;margin:.25rem 0 1rem">'
                 + html.escape(fenomeno if fenomeno else 'Conclusión del ADF pendiente de registro')
                 + '</div>',
@@ -497,23 +497,30 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
                             st.success('ADF reabierto y registrado en historial de validación.')
                             st.rerun()
                         except Exception as exc:st.error(str(exc))
-            # Criterio desplegable: resumen técnico, sin mostrar texto SAP.
-            if razon and origen:
-                with st.expander('🎯 Criterio de evaluación', expanded=False):
-                    st.markdown('**Conclusión del ADF**')
-                    st.write(fenomeno or 'Conclusión pendiente de registro.')
+            # Criterio siempre accesible en ventana desplegable, sin revelar
+            # la descripción SAP como si fuera la conclusión técnica del ADF.
+            with st.expander('🎯 Criterio de evaluación', expanded=False):
+                st.markdown('**Falla evaluada — conclusión técnica del ADF**')
+                st.write(fenomeno or 'La conclusión técnica aún no está registrada en el ADF.')
+                if inicio and origen and plazo:
                     st.markdown(f'**Período de evaluación:** {plazo} días')
-                    st.markdown('**Fundamento del período**')
-                    st.write(razon)
-                    st.caption(
-                        'Se revisarán internamente los avisos SAP posteriores a la '
-                        'ejecución de los planes para identificar posibles recurrencias '
-                        'del mismo fenómeno. Las coincidencias deben ser confirmadas '
-                        'antes de declarar el ADF no efectivo.'
+                    st.markdown('**Fundamento del plazo**')
+                    st.write(razon or 'No existe fundamento calculado disponible.')
+                    st.markdown('**Regla de verificación**')
+                    st.write(
+                        'Desde la fecha real de implementación del último plan activo, '
+                        'se revisan los avisos SAP importados hasta la última fecha disponible. '
+                        'El ADF se considera efectivo al completar el período sin '
+                        'reincidencias equivalentes confirmadas.'
                     )
-                    st.markdown(
-                        '**Condición de efectividad:** cumplir el período con datos '
-                        'SAP suficientes y sin reincidencias equivalentes confirmadas.'
+                    st.caption(
+                        'Las descripciones de avisos SAP se usan solo para el análisis '
+                        'interno de similitud; una coincidencia sugerida debe validarse.'
+                    )
+                else:
+                    st.info(
+                        'Para calcular el criterio se necesita vincular el aviso de origen '
+                        'y confirmar la fecha real de ejecución del último plan activo.'
                     )
             if cancelados and autorizado:
                 with st.expander('Planes cancelados · justificaciones'):
@@ -539,7 +546,7 @@ def mostrar_historial_reincidencias():
     if any(e.area == 'Sin área asignada' and getattr(e,'centro_costo','') for e in avisos):
         st.info('Existen centros de costo no incluidos en la tabla de equivalencias; revisa el mapeo de CeCo.')
     st.title('📈 Historial de Fallas y Reincidencias')
-    st.caption('Interfaz de efectividad · v16.5 · actualización visual')
+    st.caption('Interfaz de efectividad · v16.7 · conclusión técnica y criterio desplegable')
     st.caption('Historia de equipos · TOP 5 de patrones repetitivos · Seguimiento ADF')
     st.info(f'Historial SAP actualizado hasta {ultima:%d/%m/%Y}' if ultima else 'Todavía no hay avisos SAP importados.')
     filtrados=_filtros_visuales(avisos)
