@@ -42,12 +42,29 @@ def _planes(adf):
     return [p for p in planes if isinstance(p, dict)] if isinstance(planes, list) else []
 
 
-def _fecha_ejecucion(planes):
-    fechas=[]
+def _clasificar_planes(planes):
+    """Los planes archivados/cancelados no son ejecutados ni pendientes activos."""
+    activos, cancelados, archivados = [], [], []
     for p in planes:
+        if p.get("eliminado_administrador") or p.get("estado_administrativo") == "Eliminado":
+            archivados.append(p)
+        elif p.get("estado_administrativo") == "Cancelado":
+            cancelados.append(p)
+        else:
+            activos.append(p)
+    return activos, cancelados, archivados
+
+
+def _fecha_ejecucion(planes):
+    """Última fecha acreditada de ejecución, solo de planes activos."""
+    fechas = []
+    for p in planes:
+        fecha = p.get("fecha_ejecucion")
+        if not fecha:
+            return None
         try:
-            fechas.append(dt.date.fromisoformat(str(p['fecha_ejecucion'])[:10]))
-        except (ValueError, KeyError, TypeError):
+            fechas.append(dt.date.fromisoformat(str(fecha)[:10]))
+        except (ValueError, TypeError):
             return None
     return max(fechas) if fechas else None
 
@@ -179,20 +196,36 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
     st.markdown('#### Efectividad de ADF · Planes completamente ejecutados')
     st.caption('La información se lee directamente desde los planes existentes. No es necesario volver a cargar fechas ni evidencias.')
     visibles=0
-    excluidos={'sin_planes':0,'pendientes':0,'sin_vinculo':0,'sin_fecha':0}
+    excluidos={'sin_planes':0,'sin_activos':0,'pendientes':0,'sin_vinculo':0,'sin_fecha':0}
     for adf in adfs:
         planes=_planes(adf)
         if not planes:
             excluidos['sin_planes']+=1;continue
-        # Solo planes totalmente ejecutados y con respaldo aprobado.
-        # Los aprobados con observación son elegibles: el resultado se revisa
-        # con especial atención a la evidencia de calidad moderada.
-        pendientes=[p for p in planes if p.get('estado_ejecucion')!='Ejecutado verificado']
+        activos,cancelados,archivados=_clasificar_planes(planes)
+        if not activos:
+            excluidos['sin_activos']+=1
+            continue
+        # Cancelados/archivados quedan fuera del denominador; no son ejecutados.
+        pendientes=[p for p in activos if p.get('estado_ejecucion')!='Ejecutado verificado']
         if pendientes:
             excluidos['pendientes']+=1
             continue
+        st.markdown(f'**ADF #{adf.id} · {adf.equipo}**')
+        st.success(f'Planes activos completos: {len(activos)}/{len(activos)} (100%).')
+        if cancelados or archivados:
+            st.warning(
+                f'⚠️ {len(cancelados)} plan(es) cancelado(s) y '
+                f'{len(archivados)} archivado(s). Se excluyen del cumplimiento, '
+                'pero pueden limitar la efectividad de las medidas preventivas.'
+            )
+            with st.expander('Ver planes no ejecutados y sus justificaciones'):
+                for p in cancelados+archivados:
+                    st.write(f'**{p.get("accion") or p.get("titulo") or "Plan"}** · '
+                             f'{p.get("estado_administrativo") or "Archivado"}')
+                    for registro in p.get('auditoria_administrativa') or []:
+                        st.caption(f'{registro.get("motivo","")} · {registro.get("justificacion","")}')
         observados=[]
-        for p in planes:
+        for p in activos:
             rev=p.get('revision_ia') or {}
             if isinstance(rev,dict) and rev.get('aprobado_con_observacion'):
                 observados.append((p.get('titulo') or p.get('descripcion') or 'Plan',
@@ -202,18 +235,25 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
             excluidos['sin_vinculo']+=1
             st.markdown(f'**ADF #{adf.id} · {adf.equipo} — Planes completos**')
             st.info('Planes ejecutados y verificados. Falta vincular el aviso SAP de origen para calcular efectividad y reincidencias sin confundir modos de falla.')
-            for ix, p in enumerate(planes, 1):
+            for ix, p in enumerate(activos, 1):
                 rev=p.get('revision_ia') or {}
                 st.caption(f'Plan {ix} · Confianza respaldo: {rev.get("confianza", "sin dato") if isinstance(rev,dict) else "sin dato"}% · {p.get("estado_respaldo") or "Sin clasificación histórica"}')
             st.divider()
             continue
         if not any(e.aviso in {v.aviso for v in filtrados} for e in origen):continue
-        inicio=_fecha_ejecucion(planes)
+        inicio=_fecha_ejecucion(activos)
         if not inicio:
-            excluidos['sin_fecha']+=1;continue
+            excluidos['sin_fecha']+=1
+            st.info('Planes activos completos, pero falta fecha de ejecución verificable. '
+                    'No se puede iniciar el cómputo de días de observación.')
+            st.divider()
+            continue
         modos={e.modo for e in origen if e.modo and e.modo!='Sin clasificar'}
         if not modos:
-            excluidos['sin_vinculo']+=1;continue
+            excluidos['sin_vinculo']+=1
+            st.info('Falta identificar el modo de falla de los avisos vinculados.')
+            st.divider()
+            continue
         asociados=[e for e in avisos if e.equipo_codigo==origen[0].equipo_codigo and e.modo in modos]
         plazo,confianza,razon=plazo_sugerido([e for e in asociados if e.fecha<=inicio])
         corte=min(ultima,dt.date.today()) if ultima else inicio
@@ -224,7 +264,7 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         st.progress(min(1.,dias/max(plazo,1)))
         st.caption(f'{dias} / {plazo} días observados · {max(0,plazo-dias)} restantes · Confianza {confianza}')
         st.markdown('**Calidad de respaldos de los planes**')
-        for ix, plan in enumerate(planes, 1):
+        for ix, plan in enumerate(activos, 1):
             rev = plan.get('revision_ia') or {}
             porcentaje = rev.get('confianza') if isinstance(rev, dict) else None
             estado_respaldo = plan.get('estado_respaldo') or 'Sin clasificación histórica'
@@ -253,10 +293,13 @@ def _seguimiento(adfs,avisos,filtrados,ultima):
         else:st.success('Sin reincidencias similares durante el período observado. Revisar exposición y control antes de cerrar efectividad.')
         with st.expander('Fundamento del plazo'):st.write(razon)
         st.divider()
-    if not visibles:st.info('No hay ADF elegibles con los filtros seleccionados.')
+    if not visibles:st.info('No hay ADF con seguimiento temporal calculable para los filtros seleccionados. '
+                             'Los ADF con planes activos completos se muestran arriba, '
+                             'aunque todavía falten vínculos o fechas.')
     with st.expander('Diagnóstico de ADF no elegibles'):
         st.write(f'ADF con planes aún sin ejecutar/verificar: {excluidos["pendientes"]}')
         st.write(f'ADF sin planes estructurados: {excluidos["sin_planes"]}')
+        st.write(f'ADF con todos sus planes cancelados/archivados (requieren revisión): {excluidos["sin_activos"]}')
         st.write(f'ADF sin aviso SAP coincidente: {excluidos["sin_vinculo"]}')
         st.write(f'ADF sin fecha de ejecución verificada: {excluidos["sin_fecha"]}')
         st.caption('Si el ADF esperado no aparece, revisa el estado real de cada plan y su número de aviso SAP. No se alteraron estados ni validaciones.')
